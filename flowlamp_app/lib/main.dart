@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'widgets/colorslider.dart';
 import 'widgets/powerbutton.dart';
 import 'widgets/brightslider.dart';
+import 'widgets/sleepbutton.dart';
+import 'widgets/alarmbutton.dart';
+import 'widgets/anglebutton.dart';
 
 void main() {
   runApp(const MyApp());
@@ -87,6 +90,14 @@ class _MyHomePageState extends State<MyHomePage> {
                 });
               },
             ),
+            SleepingButton(),
+            Row(
+              
+              children: const [
+                AlarmCard(), 
+                AngleCard()
+                ]
+              ),
           ],
         ),
       ),
