@@ -5,6 +5,7 @@ import 'widgets/brightslider.dart';
 import 'widgets/sleepbutton.dart';
 import 'widgets/alarmbutton.dart';
 import 'widgets/anglebutton.dart';
+import 'alarm.dart';
 
 void main() {
   runApp(const MyApp());
@@ -92,12 +93,34 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             SleepingButton(),
             Row(
-              
-              children: const [
-                AlarmCard(), 
-                AngleCard()
-                ]
-              ),
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => AlarmScreen()),
+                      );
+                    },
+                    child: const AlarmCard(),
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => AlarmScreen()), //이거 나중에 각도 페이지 넣기
+                      );
+                    },
+                    child: const AngleCard(),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
