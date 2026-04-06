@@ -94,12 +94,34 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             SleepingButton(),
             Row(
-              
-              children: const [
-                AlarmCard(), 
-                AngleCard()
-                ]
-              ),
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => AlarmScreen()),
+                      );
+                    },
+                    child: const AlarmCard(),
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                Expanded(
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => AlarmScreen()), //이거 나중에 각도 페이지 넣기
+                      );
+                    },
+                    child: const AngleCard(),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
