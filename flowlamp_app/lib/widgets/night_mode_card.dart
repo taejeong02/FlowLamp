@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart'; // 💡 수동 시간 설정(드럼통 픽커)을 위해 추가
+import 'package:progressive_time_picker/progressive_time_picker.dart';
 
 class NightModeCard extends StatefulWidget {
-  const NightModeCard({Key? key}) : super(key: key);
+  const NightModeCard({super.key});
 
   @override
   State<NightModeCard> createState() => _NightModeCardState();
@@ -9,25 +12,146 @@ class NightModeCard extends StatefulWidget {
 
 class _NightModeCardState extends State<NightModeCard> {
   bool isNightModeOn = true;
-  RangeValues _currentRangeValues = const RangeValues(23, 2); // 기본값: 23시 ~ 02시
+  Timer? _minuteTimer;
 
-  // 숫자를 시간 문자열로 변환 (예: 23 -> "23:00", 2 -> "02:00")
-  String _formatTime(double value) {
-    int hour = value.toInt();
-    return '${hour.toString().padLeft(2, '0')}:00';
+  PickedTime _startTime = PickedTime(h: 23, m: 0);
+  PickedTime _endTime = PickedTime(h: 6, m: 0);
+
+  @override
+  void initState() {
+    super.initState();
+    _minuteTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _minuteTimer?.cancel();
+    super.dispose();
+  }
+
+  String _formatTime(PickedTime time) {
+    return '${time.h.toString().padLeft(2, '0')}:${time.m.toString().padLeft(2, '0')}';
+  }
+
+  bool _isCurrentlyNightTime() {
+    if (!isNightModeOn) return false;
+
+    DateTime now = DateTime.now();
+    int currentMinutes = now.hour * 60 + now.minute;
+    int startMinutes = _startTime.h * 60 + _startTime.m;
+    int endMinutes = _endTime.h * 60 + _endTime.m;
+
+    if (startMinutes <= endMinutes) {
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    } else {
+      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    }
+  }
+
+  // 💡 추가된 기능: 텍스트를 눌렀을 때 뜨는 수동 시간 설정 다이얼로그
+  Future<void> _showManualTimePicker(BuildContext context) async {
+    DateTime now = DateTime.now();
+    // 픽커 초기값을 현재 설정된 시간으로 세팅
+    DateTime tempStart = DateTime(now.year, now.month, now.day, _startTime.h, _startTime.m);
+    DateTime tempEnd = DateTime(now.year, now.month, now.day, _endTime.h, _endTime.m);
+
+    await showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20.0)),
+          child: SizedBox(
+            height: 380, // 취침/기상 시간을 위아래로 배치하기 위해 높이 확보
+            child: Column(
+              children: [
+                // 상단 확인/취소 버튼
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('취소', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            _startTime = PickedTime(h: tempStart.hour, m: tempStart.minute);
+                            _endTime = PickedTime(h: tempEnd.hour, m: tempEnd.minute);
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: const Text('확인', style: TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                
+                // 1. 시작 시간(취침) 픽커 영역
+                const Padding(
+                  padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
+                  child: Text('🌙 시작 시간 설정', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                ),
+                Expanded(
+                  child: CupertinoDatePicker(
+                    mode: CupertinoDatePickerMode.time,
+                    use24hFormat: true, // 24시간 형식 사용
+                    initialDateTime: tempStart,
+                    minuteInterval: 1, // 1분 단위로 정밀 설정
+                    onDateTimeChanged: (DateTime newTime) {
+                      tempStart = newTime;
+                    },
+                  ),
+                ),
+                
+                const Divider(height: 1),
+                
+                // 2. 종료 시간(기상) 픽커 영역
+                const Padding(
+                  padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
+                  child: Text('☀️ 종료 시간 설정', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                ),
+                Expanded(
+                  child: CupertinoDatePicker(
+                    mode: CupertinoDatePickerMode.time,
+                    use24hFormat: true,
+                    initialDateTime: tempEnd,
+                    minuteInterval: 1, // 1분 단위로 정밀 설정
+                    onDateTimeChanged: (DateTime newTime) {
+                      tempEnd = newTime;
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 280, // 카드 너비 지정
+    final Color backgroundColor = _isCurrentlyNightTime() 
+        ? const Color(0xFFFFF5E1) 
+        : Colors.white;
+
+    return AnimatedContainer(
+      duration: const Duration(seconds: 1),
+      width: 320, 
       padding: const EdgeInsets.all(24.0),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(24.0),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 15,
             spreadRadius: 2,
             offset: const Offset(0, 5),
@@ -36,7 +160,6 @@ class _NightModeCardState extends State<NightModeCard> {
       ),
       child: Column(
         children: [
-          // 상단: 아이콘, 텍스트, 스위치
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -47,14 +170,14 @@ class _NightModeCardState extends State<NightModeCard> {
                   Text(
                     "NIGHT MODE",
                     style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.2,
                       color: Colors.grey.shade800,
                     ),
                   ),
                 ],
               ),
-              // 커스텀 스위치 (ON/OFF 글씨 포함)
               GestureDetector(
                 onTap: () {
                   setState(() {
@@ -104,37 +227,78 @@ class _NightModeCardState extends State<NightModeCard> {
             ],
           ),
           
-          const SizedBox(height: 20),
+          const SizedBox(height: 30),
           
-          // 중단: 양방향 시간 조절 슬라이더
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: Colors.grey.shade800,
-              inactiveTrackColor: Colors.grey.shade300,
-              thumbColor: Colors.grey.shade100,
-              overlayColor: Colors.grey.shade800.withOpacity(0.2),
-              trackHeight: 4.0,
-            ),
-            child: RangeSlider(
-              values: _currentRangeValues,
-              min: 0,
-              max: 24,
-              divisions: 24,
-              onChanged: isNightModeOn 
-                ? (RangeValues values) {
-                    setState(() { _currentRangeValues = values; });
-                  }
-                : null, // 모드가 꺼져있으면 슬라이더 비활성화
+          IgnorePointer(
+            ignoring: !isNightModeOn, 
+            child: Opacity(
+              opacity: isNightModeOn ? 1.0 : 0.4, 
+              child: TimePicker(
+                initTime: _startTime,
+                endTime: _endTime,
+                height: 220,
+                width: 220,
+                onSelectionChange: (PickedTime start, PickedTime end, bool? isResolvable) {
+                  setState(() {
+                    _startTime = start;
+                    _endTime = end;
+                  });
+                },
+                onSelectionEnd: (PickedTime start, PickedTime end, bool? isResolvable) {
+                  setState(() {
+                    _startTime = start;
+                    _endTime = end;
+                  });
+                },
+                decoration: TimePickerDecoration(
+                  baseColor: Colors.grey.shade200, 
+                  sweepDecoration: TimePickerSweepDecoration(
+                    pickerStrokeWidth: 16,
+                    pickerColor: Colors.grey.shade800, 
+                    showConnector: true,
+                  ),
+                  initHandlerDecoration: TimePickerHandlerDecoration(
+                    color: Colors.grey.shade800,
+                    shape: BoxShape.circle,
+                    radius: 14,
+                    icon: const Icon(Icons.bedtime, size: 16, color: Colors.white),
+                  ),
+                  endHandlerDecoration: TimePickerHandlerDecoration(
+                    color: Colors.grey.shade800,
+                    shape: BoxShape.circle,
+                    radius: 14,
+                    icon: const Icon(Icons.wb_sunny, size: 16, color: Colors.white),
+                  ),
+                  clockNumberDecoration: TimePickerClockNumberDecoration(
+                    defaultTextColor: Colors.grey.shade600, // 색상을 살짝 더 진하게
+                    defaultFontSize: 18, // 💡 수정사항: 12 -> 18로 크기 대폭 증가
+                    showNumberIndicators: true,
+                    clockTimeFormat: ClockTimeFormat.twentyFourHours,
+                  ),
+                ),
+              ),
             ),
           ),
           
-          // 하단: 설정된 시간 범위 텍스트
-          Text(
-            '${_formatTime(_currentRangeValues.start)} ~ ${_formatTime(_currentRangeValues.end)}',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w600,
-              color: isNightModeOn ? Colors.grey.shade700 : Colors.grey.shade400,
+          const SizedBox(height: 20),
+          
+          // 💡 수정사항: 텍스트를 감싸서 터치 가능하게 만들고, 터치 피드백을 위해 투명한 배경 박스를 주었습니다.
+          GestureDetector(
+            onTap: isNightModeOn ? () => _showManualTimePicker(context) : null,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              decoration: BoxDecoration(
+                color: isNightModeOn ? Colors.grey.shade100 : Colors.transparent, // 터치할 수 있는 버튼 느낌
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${_formatTime(_startTime)} ~ ${_formatTime(_endTime)}',
+                style: TextStyle(
+                  fontSize: 26, // 텍스트 크기도 24 -> 26으로 살짝 키움
+                  fontWeight: FontWeight.bold,
+                  color: isNightModeOn ? Colors.grey.shade800 : Colors.grey.shade400,
+                ),
+              ),
             ),
           ),
         ],

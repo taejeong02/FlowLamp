@@ -5,6 +5,7 @@ import 'widgets/brightslider.dart';
 import 'widgets/sleepbutton.dart';
 import 'widgets/alarmbutton.dart';
 import 'widgets/anglebutton.dart';
+import 'alarm.dart';
 
 void main() {
   runApp(const MyApp());
@@ -36,7 +37,8 @@ class MyApp extends StatelessWidget {
         // tested with just a hot reload.
         colorScheme: .fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(title: 'Flow_Lamp'),
+      // home: const MyHomePage(title: 'Flow_Lamp'),
+      home: const AlarmScreen(),
     );
   }
 }
