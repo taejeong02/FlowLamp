@@ -90,12 +90,12 @@ while cap.isOpened():
     # 3. 화면 메시지 출력
     # 졸음 감지 시 빨간색 메시지
     if drowsy_detected:
-        cv2.putText(frame, "DROWSY ALERT! (Drowsiness Detected!)", (50, 100), 
+        cv2.putText(frame, "sleeping!", (50, 100), 
                     cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 0, 255), 3)
     
     # V자 인식 시 초록색 메시지
     if v_detected:
-        cv2.putText(frame, "V-Gesture Detected! (V recognition!)", (50, 180), 
+        cv2.putText(frame, "V hand!", (50, 180), 
                     cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 255, 0), 3)
 
     cv2.imshow('Safety Monitor', frame)
