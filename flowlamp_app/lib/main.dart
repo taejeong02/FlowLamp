@@ -6,6 +6,7 @@ import 'widgets/sleepbutton.dart';
 import 'widgets/alarmbutton.dart';
 import 'widgets/anglebutton.dart';
 import 'alarm.dart';
+import 'widgets/direction_controller.dart';
 
 void main() {
   runApp(const MyApp());
@@ -114,7 +115,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     onTap: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => AlarmScreen()), //이거 나중에 각도 페이지 넣기
+                        MaterialPageRoute(builder: (context) => DirectionControllerScreen()), //이거 나중에 각도 페이지 넣기
                       );
                     },
                     child: const AngleCard(),
