@@ -1,0 +1,3 @@
+0 Closed_book
+1 Open_book
+2 No-book
