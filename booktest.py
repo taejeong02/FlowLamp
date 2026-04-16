@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import tensorflow as tf
 
-MODEL_PATH = r"C:\Users\ktj02\Desktop\ㅤㅤ\4학년 1학기\캡스톤디자인\FlowLamp\keras_model.h5"
-LABEL_PATH = r"C:\Users\ktj02\Desktop\ㅤㅤ\4학년 1학기\캡스톤디자인\FlowLamp\labels.txt"
+MODEL_PATH = "keras_model.h5"
+LABEL_PATH = "labels.txt"
 IMG_SIZE = 224
 CONFIDENCE_THRESHOLD = 0.70
 

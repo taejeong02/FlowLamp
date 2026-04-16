@@ -61,7 +61,7 @@ while cap.isOpened():
 
         if neck_angle <= TURTLE_NECK_THRESHOLD:
             color = (0, 0, 255)
-            status_msg = "TURTLE NECK!"
+            status_msg = "TURTLE NECK!!"
 
         cv2.putText(frame, f"Neck Angle: {int(neck_angle)} deg", (30, 130),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
