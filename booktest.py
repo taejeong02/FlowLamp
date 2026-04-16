@@ -1,78 +1,146 @@
 import cv2
 import numpy as np
+import tensorflow as tf
+
+MODEL_PATH = "keras_model.h5"
+LABEL_PATH = "labels.txt"
+IMG_SIZE = 224
+CONFIDENCE_THRESHOLD = 0.70
+
+
+def load_labels(label_path):
+    labels = []
+    with open(label_path, "r", encoding="utf-8") as f:
+        for line in f:
+            label = line.strip()
+            if label:
+                labels.append(label)
+    return labels
+
+
+def clean_label(label):
+    parts = label.split()
+    if len(parts) >= 2 and parts[0].isdigit():
+        return " ".join(parts[1:])
+    return label
+
+
+def preprocess_image(frame):
+    resized = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
+    image = resized.astype(np.float32)
+    image = (image / 127.5) - 1.0
+    image = np.expand_dims(image, axis=0)
+    return image
+
+
+def to_korean(label):
+    l = label.lower()
+
+    if "open" in l:
+        return "펴진 책"
+    elif "closed" in l:
+        return "덮힌 책"
+    elif "no" in l:
+        return "책 없음"
+    else:
+        return label
+
 
 def main():
+    print("1. AI 모델 로딩 시작")
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    print("2. AI 모델 로딩 완료")
+
+    labels = load_labels(LABEL_PATH)
+    labels = [clean_label(label) for label in labels]
+    print("3. 라벨 로딩 완료:", labels)
+
+    print("4. 카메라 열기 시도")
     cap = cv2.VideoCapture(0)
-    
-    # 카메라가 대각선일 때 에지가 잘 끊기므로 해상도를 적절히 유지합니다.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    print("대각선 각도 & 펼친 책 인식 모드 실행 중...")
+    if not cap.isOpened():
+        print("카메라를 열 수 없습니다.")
+        return
+
+    print("5. 카메라 열기 성공")
+    print("실시간 책 상태 인식 시작")
+    print("종료하려면 q 키를 누르세요.")
+
+    last_state = ""
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            print("프레임을 읽을 수 없습니다.")
+            break
 
-        # 1. 전처리: 그레이스케일 -> 강한 블러 (노이즈 제거)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (11, 11), 0)
+        frame = cv2.flip(frame, 1)
 
-        # 2. 에지 검출 후 '팽창(Dilate)' 처리
-        # 대각선 각도에서는 선이 가늘게 보이므로, 선을 굵게 만들어 하나로 합칩니다.
-        edged = cv2.Canny(blurred, 30, 150)
-        kernel = np.ones((5, 5), np.uint8)
-        dilated = cv2.dilate(edged, kernel, iterations=2)
+        h, w, _ = frame.shape
 
-        # 3. 윤곽선 찾기
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        target_contour = None
-        max_area = 0
+        box_size = 300
+        x1 = w // 2 - box_size // 2
+        y1 = h // 2 - box_size // 2
+        x2 = x1 + box_size
+        y2 = y1 + box_size
 
-        for c in contours:
-            area = cv2.contourArea(c)
-            # 화면의 최소 10% 이상은 차지해야 책으로 간주 (오인식 방지)
-            if area < 20000: continue 
+        roi = frame[y1:y2, x1:x2]
 
-            # 4. [핵심] Convex Hull (볼록 선체) 적용
-            # 펼친 책의 굴곡진 부분을 무시하고 전체를 감싸는 외곽선을 만듭니다.
-            hull = cv2.convexHull(c)
-            hull_area = cv2.contourArea(hull)
-            
-            # 5. 밀도(Solidity) 및 가로세로비 체크
-            # 대각선에서 봐도 책은 덩어리감이 있어야 함
-            solidity = float(area) / hull_area if hull_area > 0 else 0
-            
-            if solidity > 0.6: # 60% 이상 채워진 덩어리라면
-                if area > max_area:
-                    max_area = area
-                    target_contour = hull
+        input_data = preprocess_image(roi)
+        prediction = model.predict(input_data, verbose=0)[0]
 
-        # 6. 최종 결과 표시
-        if target_contour is not None:
-            # 인식된 덩어리 그리기
-            cv2.drawContours(frame, [target_contour], -1, (255, 0, 0), 3)
-            
-            # 중심점 계산하여 메세지 표시
-            M = cv2.moments(target_contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                
-                cv2.putText(frame, "Book Detected!", (cx-50, cy), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                # 터미널 출력
-                print("책인식!")
+        class_idx = int(np.argmax(prediction))
+        confidence = float(prediction[class_idx])
 
-        # 디버깅용: 컴퓨터가 보고 있는 '선'의 상태 확인
-        cv2.imshow("Original", frame)
-        cv2.imshow("Process(Dilated)", dilated) 
+        raw_label = labels[class_idx]
+        result_label = to_korean(raw_label)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'): break
+        if confidence < CONFIDENCE_THRESHOLD:
+            result_label = "판별 중..."
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+        main_text = f"{result_label} ({confidence * 100:.1f}%)"
+        cv2.putText(
+            frame,
+            main_text,
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 255, 0),
+            2
+        )
+
+        y_text = 80
+        for i, prob in enumerate(prediction):
+            label_text = to_korean(labels[i])
+            line = f"{label_text}: {prob * 100:.1f}%"
+            cv2.putText(
+                frame,
+                line,
+                (20, y_text),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2
+            )
+            y_text += 30
+
+        cv2.imshow("ROI", roi)
+        cv2.imshow("AI Book Classification", frame)
+
+        if result_label != last_state:
+            print(f"현재 상태: {result_label}, 신뢰도: {confidence * 100:.1f}%")
+            last_state = result_label
+
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
