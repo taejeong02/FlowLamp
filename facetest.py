@@ -96,7 +96,7 @@ while cap.isOpened():
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     face_result = face_mesh.process(rgb)
-    pose_result = pose.process(rgb)
+    pose_result = pose.process(rgb)Q
 
     turtle_elapsed = 0.0
     eye_closed_elapsed = 0.0
