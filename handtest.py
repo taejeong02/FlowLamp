@@ -6,13 +6,19 @@ import time
 # --- 설정 ---
 BLINK_THRESHOLD = 0.20
 DROWSY_TIME_LIMIT = 5.0
-DEAD_ZONE = 40  # 중앙 기준 허용 오차(px)
+
+DEAD_ZONE_XY = 40      # 좌우/상하 중앙 허용 오차(px)
+DEAD_ZONE_Z = 25       # 앞뒤 손 크기 허용 오차(px)
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
-face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True, min_detection_confidence=0.5)
+face_mesh = mp_face_mesh.FaceMesh(
+    refine_landmarks=True,
+    min_detection_confidence=0.5
+)
+
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
@@ -34,13 +40,14 @@ def get_ear(landmarks, eye_indices):
 
 def is_v_gesture(hand_landmarks):
     lm = hand_landmarks.landmark
+
     index_up = lm[8].y < lm[6].y
     middle_up = lm[12].y < lm[10].y
     ring_down = lm[16].y > lm[14].y
     pinky_down = lm[20].y > lm[18].y
+
     return index_up and middle_up and ring_down and pinky_down
 
-# 손바닥 펼침 인식
 def is_open_palm(hand_landmarks):
     lm = hand_landmarks.landmark
 
@@ -51,22 +58,41 @@ def is_open_palm(hand_landmarks):
 
     return index_up and middle_up and ring_up and pinky_up
 
-# 화면 중앙 기준 이동 명령 계산
+def get_hand_size(hand_landmarks, frame_w, frame_h):
+    lm = hand_landmarks.landmark
+
+    # 손목 0번과 손바닥 중앙 근처 9번 사이 거리
+    x0 = lm[0].x * frame_w
+    y0 = lm[0].y * frame_h
+
+    x9 = lm[9].x * frame_w
+    y9 = lm[9].y * frame_h
+
+    return math.hypot(x9 - x0, y9 - y0)
+
 def get_tracking_command(error_x, error_y):
     move_x = "STOP"
     move_y = "STOP"
 
-    if error_x > DEAD_ZONE:
+    if error_x > DEAD_ZONE_XY:
         move_x = f"RIGHT {abs(error_x)}px"
-    elif error_x < -DEAD_ZONE:
+    elif error_x < -DEAD_ZONE_XY:
         move_x = f"LEFT {abs(error_x)}px"
 
-    if error_y > DEAD_ZONE:
+    if error_y > DEAD_ZONE_XY:
         move_y = f"DOWN {abs(error_y)}px"
-    elif error_y < -DEAD_ZONE:
+    elif error_y < -DEAD_ZONE_XY:
         move_y = f"UP {abs(error_y)}px"
 
     return move_x, move_y
+
+def get_depth_command(error_z):
+    if error_z > DEAD_ZONE_Z:
+        return f"HEAD FORWARD {int(error_z)}px"
+    elif error_z < -DEAD_ZONE_Z:
+        return f"HEAD BACKWARD {int(abs(error_z))}px"
+    else:
+        return "STOP"
 
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
@@ -74,10 +100,14 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 eyes_closed_start_time = 0
 drowsy_detected = False
 
+# 앞뒤 기준 손 크기
+base_hand_size = 0
+
 cap = cv2.VideoCapture(0)
 
 while cap.isOpened():
     ret, frame = cap.read()
+
     if not ret:
         break
 
@@ -85,6 +115,7 @@ while cap.isOpened():
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     frame_h, frame_w, _ = frame.shape
+
     center_x = frame_w // 2
     center_y = frame_h // 2
 
@@ -124,15 +155,13 @@ while cap.isOpened():
 
             lm = hand_landmarks.landmark
 
-            # V 제스처 체크
             if is_v_gesture(hand_landmarks):
                 v_detected = True
 
-            # 손바닥 펼침 체크
             if is_open_palm(hand_landmarks):
                 palm_detected = True
 
-                # 손바닥 중심 좌표: 9번 랜드마크 사용
+                # 손 중심 좌표
                 hand_x = int(lm[9].x * frame_w)
                 hand_y = int(lm[9].y * frame_h)
 
@@ -141,32 +170,58 @@ while cap.isOpened():
 
                 move_x, move_y = get_tracking_command(error_x, error_y)
 
+                # 손 크기 계산
+                hand_size = get_hand_size(hand_landmarks, frame_w, frame_h)
+
+                # 처음 손바닥을 펼쳤을 때 기준 크기 저장
+                if base_hand_size == 0:
+                    base_hand_size = hand_size
+
+                error_z = hand_size - base_hand_size
+                move_z = get_depth_command(error_z)
+
                 # 손 중심점 표시
                 cv2.circle(frame, (hand_x, hand_y), 10, (255, 0, 0), -1)
 
-                # 중앙점과 손 중심점 연결선
+                # 중앙점과 손 중심점 연결
                 cv2.line(frame, (center_x, center_y), (hand_x, hand_y), (255, 255, 0), 2)
 
-                cv2.putText(frame, "OPEN PALM TRACKING", (50, 180),
+                cv2.putText(frame, "OPEN PALM TRACKING", (50, 160),
                             cv2.FONT_HERSHEY_DUPLEX, 0.9, (0, 255, 0), 2)
 
-                cv2.putText(frame, f"Hand Center: ({hand_x}, {hand_y})", (50, 220),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(frame, f"Hand Center: ({hand_x}, {hand_y})", (50, 200),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-                cv2.putText(frame, f"Screen Center: ({center_x}, {center_y})", (50, 250),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(frame, f"Screen Center: ({center_x}, {center_y})", (50, 230),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-                cv2.putText(frame, f"Error X: {error_x}px", (50, 290),
+                cv2.putText(frame, f"Error X: {error_x}px", (50, 270),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                cv2.putText(frame, f"Error Y: {error_y}px", (50, 320),
+                cv2.putText(frame, f"Error Y: {error_y}px", (50, 300),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                cv2.putText(frame, f"Motor X: {move_x}", (50, 365),
+                cv2.putText(frame, f"Motor X: {move_x}", (50, 340),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                cv2.putText(frame, f"Motor Y: {move_y}", (50, 375),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                cv2.putText(frame, f"Base Hand Size: {int(base_hand_size)}", (50, 420),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                cv2.putText(frame, f"Current Hand Size: {int(hand_size)}", (50, 450),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                cv2.putText(frame, f"Depth Error: {int(error_z)}px", (50, 480),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+                cv2.putText(frame, f"Motor Z: {move_z}", (50, 520),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
 
-                cv2.putText(frame, f"Motor Y: {move_y}", (50, 400),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
+    # 손바닥이 안 보이면 기준값 초기화
+    if not palm_detected:
+        base_hand_size = 0
 
     # 3. 출력
     if drowsy_detected:
@@ -174,7 +229,7 @@ while cap.isOpened():
                     cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 0, 255), 3)
 
     if v_detected:
-        cv2.putText(frame, "V GESTURE!", (50, 140),
+        cv2.putText(frame, "V GESTURE!", (50, 130),
                     cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 0), 2)
 
     if not palm_detected:
