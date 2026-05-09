@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart'; // 💡 수동 시간 설정(드럼통 픽커)을 위해 추가
 import 'package:progressive_time_picker/progressive_time_picker.dart';
+import '../services/flowlamp_api.dart';
 
 class NightModeCard extends StatefulWidget {
   const NightModeCard({super.key});
@@ -11,6 +12,8 @@ class NightModeCard extends StatefulWidget {
 }
 
 class _NightModeCardState extends State<NightModeCard> {
+  final FlowLampApi _api = FlowLampApi();
+
   bool isNightModeOn = true;
   Timer? _minuteTimer;
 
@@ -47,6 +50,20 @@ class _NightModeCardState extends State<NightModeCard> {
       return currentMinutes >= startMinutes && currentMinutes < endMinutes;
     } else {
       return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    }
+  }
+
+  Future<void> _setNightMode(bool nextValue) async {
+    try {
+      await _api.setNightMode(nextValue);
+      setState(() {
+        isNightModeOn = nextValue;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('야간 모드 연결 실패: $error')),
+      );
     }
   }
 
@@ -180,9 +197,7 @@ class _NightModeCardState extends State<NightModeCard> {
               ),
               GestureDetector(
                 onTap: () {
-                  setState(() {
-                    isNightModeOn = !isNightModeOn;
-                  });
+                  _setNightMode(!isNightModeOn);
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),

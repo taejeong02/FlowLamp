@@ -7,6 +7,7 @@ import 'widgets/alarmbutton.dart';
 import 'widgets/anglebutton.dart';
 import 'alarm.dart';
 import 'widgets/direction_controller.dart';
+import 'services/flowlamp_api.dart';
 
 void main() {
   runApp(const MyApp());
@@ -36,7 +37,7 @@ class MyApp extends StatelessWidget {
         //
         // This works for code too, not just values: Most code changes can be
         // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
       home: const MyHomePage(title: 'Flow_Lamp'),
       // home: const AlarmScreen(),
@@ -54,9 +55,25 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  final FlowLampApi _api = FlowLampApi();
+
   bool isOn = false;
   double sliderValue = 0.5;
   double brightness = 50;
+
+  Future<void> _setPower(bool nextValue) async {
+    try {
+      final response = await _api.setPower(nextValue);
+      setState(() {
+        isOn = response['is_on'] as bool? ?? nextValue;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('램프 연결 실패: $error')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -72,9 +89,7 @@ class _MyHomePageState extends State<MyHomePage> {
             PowerButton(
               isOn: isOn,
               onTap: () {
-                setState(() {
-                  isOn = !isOn;
-                });
+                _setPower(!isOn);
               },
             ),
             ColorSlider(
