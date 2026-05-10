@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
-import 'widgets/colorslider.dart';
-import 'widgets/powerbutton.dart';
-import 'widgets/brightslider.dart';
-import 'widgets/sleepbutton.dart';
+
+import 'alarm.dart';
+import 'services/flowlamp_api.dart';
 import 'widgets/alarmbutton.dart';
 import 'widgets/anglebutton.dart';
-import 'alarm.dart';
+import 'widgets/brightslider.dart';
+import 'widgets/colorslider.dart';
 import 'widgets/direction_controller.dart';
-import 'services/flowlamp_api.dart';
+import 'widgets/powerbutton.dart';
+import 'widgets/sleepbutton.dart';
 
 void main() {
   runApp(const MyApp());
@@ -16,129 +17,268 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Flow Lamp',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
       home: const MyHomePage(title: 'Flow_Lamp'),
-      // home: const AlarmScreen(),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  const MyHomePage({super.key, required this.title, this.api});
 
   final String title;
+  final FlowLampApi? api;
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  final FlowLampApi _api = FlowLampApi();
+  late final FlowLampApi _api;
 
   bool isOn = false;
-  double sliderValue = 0.5;
+  bool _isStatusLoading = true;
+  bool _isPowerLoading = false;
+  bool _isColorLoading = false;
+  double sliderValue = 0;
   double brightness = 50;
 
+  @override
+  void initState() {
+    super.initState();
+    _api = widget.api ?? FlowLampApi();
+    _loadLampStatus();
+  }
+
+  Future<void> _loadLampStatus() async {
+    setState(() {
+      _isStatusLoading = true;
+    });
+
+    try {
+      final response = await _api.getStatus();
+      if (!mounted) return;
+      setState(() {
+        isOn = response['is_on'] as bool? ?? false;
+        sliderValue = _sliderValueFromColor(response['color']) ?? sliderValue;
+      });
+    } catch (error) {
+      _showLampError('Failed to load lamp status', error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isStatusLoading = false;
+        });
+      }
+    }
+  }
+
   Future<void> _setPower(bool nextValue) async {
+    if (_isPowerLoading) return;
+
+    setState(() {
+      _isPowerLoading = true;
+    });
+
     try {
       final response = await _api.setPower(nextValue);
+      if (!mounted) return;
       setState(() {
         isOn = response['is_on'] as bool? ?? nextValue;
       });
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('램프 연결 실패: $error')),
-      );
+      _showLampError('Failed to change lamp power', error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPowerLoading = false;
+        });
+      }
     }
+  }
+
+  Future<void> _setColorFromSlider(double value) async {
+    if (_isColorLoading) return;
+
+    final color = _rgbFromSliderValue(value);
+    setState(() {
+      _isColorLoading = true;
+    });
+
+    try {
+      final response = await _api.setColor(
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+      );
+      if (!mounted) return;
+      setState(() {
+        sliderValue = _sliderValueFromColor(response['color']) ?? value;
+      });
+    } catch (error) {
+      _showLampError('Failed to change lamp color', error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isColorLoading = false;
+        });
+      }
+    }
+  }
+
+  void _showLampError(String message, Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('$message: $error')));
+  }
+
+  ({int red, int green, int blue}) _rgbFromSliderValue(double value) {
+    final hue = (value.clamp(0.0, 100.0).toDouble() / 100 * 360) % 360;
+    final x = 1 - ((hue / 60) % 2 - 1).abs();
+
+    final (red, green, blue) = switch (hue) {
+      < 60 => (1.0, x, 0.0),
+      < 120 => (x, 1.0, 0.0),
+      < 180 => (0.0, 1.0, x),
+      < 240 => (0.0, x, 1.0),
+      < 300 => (x, 0.0, 1.0),
+      _ => (1.0, 0.0, x),
+    };
+
+    return (
+      red: _toColorChannel(red),
+      green: _toColorChannel(green),
+      blue: _toColorChannel(blue),
+    );
+  }
+
+  int _toColorChannel(double value) {
+    return (value * 255).round().clamp(0, 255).toInt();
+  }
+
+  double? _sliderValueFromColor(Object? color) {
+    if (color is! List || color.length < 3) return null;
+
+    final red = _asColorRatio(color[0]);
+    final green = _asColorRatio(color[1]);
+    final blue = _asColorRatio(color[2]);
+    if (red == null || green == null || blue == null) return null;
+
+    final maxValue = [red, green, blue].reduce((a, b) => a > b ? a : b);
+    final minValue = [red, green, blue].reduce((a, b) => a < b ? a : b);
+    final delta = maxValue - minValue;
+    if (delta == 0) return null;
+
+    final hue = switch (maxValue) {
+      _ when maxValue == red => 60 * (((green - blue) / delta) % 6),
+      _ when maxValue == green => 60 * (((blue - red) / delta) + 2),
+      _ => 60 * (((red - green) / delta) + 4),
+    };
+
+    return ((hue + 360) % 360) / 360 * 100;
+  }
+
+  double? _asColorRatio(Object? value) {
+    if (value is! num) return null;
+    return value.clamp(0, 255) / 255;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("Flow Lamp")),
-      body: Container(
-        width: double.infinity, // 가로 전체 차지
-        padding: const EdgeInsets.only(top: 60), // 위쪽 위치 조절
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.start, // 위쪽 정렬
-          crossAxisAlignment: CrossAxisAlignment.center, // 가로 중앙
-          children: [
-            PowerButton(
-              isOn: isOn,
-              onTap: () {
-                _setPower(!isOn);
-              },
-            ),
-            ColorSlider(
-              value: sliderValue,
-              onChanged: (value) {
-                setState(() {
-                  sliderValue = value;
-                });
-              },
-            ),
-            BrightnessSlider(
-              value: brightness,
-              onChanged: (value) {
-                setState(() {
-                  brightness = value;
-                });
-              },
-            ),
-            SleepingButton(),
-            Row(
-              children: [
-                Expanded(
-                  child: InkWell(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => AlarmScreen()),
-                      );
-                    },
-                    child: const AlarmCard(),
+      appBar: AppBar(
+        title: const Text('Flow Lamp'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh status',
+            onPressed: _isStatusLoading || _isPowerLoading
+                ? null
+                : _loadLampStatus,
+            icon: _isStatusLoading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.only(top: 60, bottom: 32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              PowerButton(
+                isOn: isOn,
+                isLoading: _isStatusLoading || _isPowerLoading,
+                onTap: () {
+                  _setPower(!isOn);
+                },
+              ),
+              ColorSlider(
+                value: sliderValue,
+                isEnabled: !_isColorLoading,
+                onChanged: (value) {
+                  setState(() {
+                    sliderValue = value;
+                  });
+                },
+                onChangeEnd: _setColorFromSlider,
+              ),
+              BrightnessSlider(
+                value: brightness,
+                onChanged: (value) {
+                  setState(() {
+                    brightness = value;
+                  });
+                },
+              ),
+              const SleepingButton(),
+              Row(
+                children: [
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const AlarmScreen(),
+                          ),
+                        );
+                      },
+                      child: const AlarmCard(),
+                    ),
                   ),
-                ),
-
-                const SizedBox(width: 10),
-
-                Expanded(
-                  child: InkWell(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => DirectionControllerScreen()), //이거 나중에 각도 페이지 넣기
-                      );
-                    },
-                    child: const AngleCard(),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                const DirectionControllerScreen(),
+                          ),
+                        );
+                      },
+                      child: const AngleCard(),
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
