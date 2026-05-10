@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from devices.led import LEDController
@@ -107,6 +107,20 @@ async def toggle_power(status: str):
     return {
         "status": "success",
         "mode": runtime.current_mode.name if runtime.current_mode else None,
+        "is_on": led.is_on,
+    }
+
+
+@app.post("/color")
+async def set_color(
+    r: int = Query(..., ge=0, le=255),
+    g: int = Query(..., ge=0, le=255),
+    b: int = Query(..., ge=0, le=255),
+):
+    led.set_color(r, g, b)
+    return {
+        "status": "success",
+        "color": led.current_color,
         "is_on": led.is_on,
     }
 

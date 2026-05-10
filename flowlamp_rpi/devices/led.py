@@ -48,6 +48,19 @@ class LEDController:
         self.is_on = False
         self._apply_color(0, 0, 0)
 
+    def set_color(self, r, g, b):
+        self.current_color = (
+            self._clamp_color_value(r),
+            self._clamp_color_value(g),
+            self._clamp_color_value(b),
+        )
+
+        if self.is_on:
+            self._apply_color(*self.current_color)
+
+    def _clamp_color_value(self, value):
+        return max(0, min(255, int(value)))
+
     def set_night_mode(self, active: bool):
         """야간 모드: 블루라이트를 줄이고 따뜻한 색감 적용"""
         self.is_night_mode = active
