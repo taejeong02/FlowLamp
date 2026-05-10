@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:http/http.dart' as http; // 👈 통신용 패키지 추가
 
 class FocusTimerSection extends StatefulWidget {
   const FocusTimerSection({Key? key}) : super(key: key);
@@ -16,6 +17,9 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
   bool isRunning = false; 
   Timer? _timer;
 
+  // ⚠️ 중요: 나중에 라즈베리 파이가 연결된 실제 Wi-Fi IP 주소로 변경해야 합니다.
+final String rpiUrl = "http://127.0.0.1:8000";
+
   String get formattedTime {
     int minutes = remainingTimeInSeconds ~/ 60;
     int seconds = remainingTimeInSeconds % 60;
@@ -25,6 +29,19 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
   double get progress {
     if (initialTimeInSeconds == 0) return 0.0;
     return remainingTimeInSeconds / initialTimeInSeconds;
+  }
+
+  // 👉 라즈베리 파이에 종료 신호를 쏘는 함수 추가
+  Future<void> _sendAlertSignal() async {
+    try {
+      final url = Uri.parse('$rpiUrl/timer/done');
+      final response = await http.post(url);
+      if (response.statusCode == 200) {
+        print("서버에 타이머 종료 신호 전송 성공!");
+      }
+    } catch (e) {
+      print("통신 실패: $e");
+    }
   }
 
   void startTimer() {
@@ -39,7 +56,10 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
           if (remainingTimeInSeconds == 0) {
             timer.cancel();
             isRunning = false;
-            _showTimeUpDialog(); // 알림창 호출
+            
+            // 💡 앱 알림창을 띄우는 동시에 라즈베리 파이로 조명 깜빡임 신호 전송!
+            _sendAlertSignal(); 
+            _showTimeUpDialog(); 
           }
         } else {
           timer.cancel();
@@ -65,7 +85,7 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
     }
   }
 
-  // 3. 시간 종료 알림창 함수 추가
+  // 3. 시간 종료 알림창 함수
   void _showTimeUpDialog() {
     showDialog(
       context: context,
@@ -73,15 +93,15 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
       builder: (BuildContext context) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20.0)),
-          title: Row(
+          title: const Row(
             children: [
-              const Icon(Icons.alarm_on, color: Colors.amber, size: 28),
-              const SizedBox(width: 10),
-              const Text('시간 종료!', style: TextStyle(fontWeight: FontWeight.bold)),
+              Icon(Icons.alarm_on, color: Colors.amber, size: 28),
+              SizedBox(width: 10),
+              Text('시간 종료!', style: TextStyle(fontWeight: FontWeight.bold)),
             ],
           ),
           content: const Text(
-            '설정한 집중 시간이 끝났습니다.\n(추후 하드웨어 연동 시 조명 기능 작동 예정)',
+            '설정한 집중 시간이 끝났습니다.\n램프 조명 알림이 작동합니다.',
             style: TextStyle(height: 1.5),
           ),
           actions: [
