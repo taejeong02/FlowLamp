@@ -36,6 +36,10 @@ class FlowLampApi {
     });
   }
 
+  Future<Map<String, dynamic>> setBrightness(int value) {
+    return _postQuery('/brightness', {'value': value.toString()});
+  }
+
   Future<Map<String, dynamic>> setNightMode(bool active) {
     return _postQuery('/mode/night', {'active': active.toString()});
   }
