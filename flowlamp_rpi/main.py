@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +11,7 @@ from modes.test_mode import TestMode
 import asyncio
 
 led = LEDController()
-
+night_schedule = {"is_on": False, "start": "23:00", "end": "06:00"}
 
 class TestInput(BaseModel):
     trigger: str
@@ -61,14 +61,42 @@ class LampRuntime:
 
 runtime = LampRuntime(led)
 
+# 👈 추가된 부분: 1분마다 시간을 확인해서 야간 모드를 켜고 끄는 백그라운드 루프
+async def time_checker_loop():
+    while True:
+        if night_schedule["is_on"]:
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            start = night_schedule["start"]
+            end = night_schedule["end"]
 
+            # 자정을 넘기는 시간 계산 (예: 23:00 ~ 06:00)
+            if start > end: 
+                is_night_time = current_time >= start or current_time <= end
+            else:
+                is_night_time = start <= current_time <= end
+
+            # 조건에 맞으면 LED 상태 변경
+            if is_night_time and not led.is_night_mode:
+                led.set_night_mode(True)
+                print("🌙 야간 모드 자동 켜짐!")
+            elif not is_night_time and led.is_night_mode:
+                led.set_night_mode(False)
+                print("☀️ 야간 모드 자동 꺼짐!")
+        
+        await asyncio.sleep(60) # 60초(1분) 대기 후 다시 루프 돎
+
+# 👇 수정된 부분: 앱 실행 시 타임 체커도 같이 실행되도록 등록
 @asynccontextmanager
 async def lifespan(_app):
     runtime_task = asyncio.create_task(runtime.start())
+    time_checker_task = asyncio.create_task(time_checker_loop()) # 타임 체커 시작
     yield
     runtime_task.cancel()
+    time_checker_task.cancel() # 타임 체커 종료
 
 
+app = FastAPI(lifespan=lifespan)
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -125,22 +153,36 @@ async def send_test_input(test_input: TestInput):
         "is_on": led.is_on,
     }
 
-# 2. 앱 제어: 야간 모드
-@app.post("/mode/night")
-async def set_night_mode(active: bool):
-    led.set_night_mode(active)
-    return {"night_mode": active}
+# 2. 앱 제어: 야간 모드 스케줄링 설정
+@app.post("/night_mode/schedule")
+async def set_night_schedule(is_on: bool, start_time: str, end_time: str):
+    """
+    앱에서 시작/종료 시간을 설정할 때 호출하는 엔드포인트
+    - start_time, end_time 예시: "23:00", "06:00"
+    """
+    night_schedule["is_on"] = is_on
+    night_schedule["start"] = start_time
+    night_schedule["end"] = end_time
+    
+    # 만약 스위치를 껐다면 즉시 야간 모드 해제
+    if not is_on and led.is_night_mode:
+        led.set_night_mode(False)
+        print("☀️ 야간 모드 즉시 해제됨")
+        
+    return {"message": "야간 모드 스케줄 저장 완료", "data": night_schedule}
 
-# 2. 앱 제어: 타이머 (n초 뒤 종료)
-@app.post("/timer")
-async def set_timer(seconds: int):
-    async def delayed_off(sec):
-        await asyncio.sleep(sec)
-        await runtime.set_mode("standby")
-        print(f"⏰ 타이머 종료: {sec}초 경과")
-
-    asyncio.create_task(delayed_off(seconds))
-    return {"status": "timer_set", "seconds": seconds}
+# 2. 앱 제어: 집중 타이머 종료 알림 수신
+@app.post("/timer/done")
+async def timer_done_alert():
+    print("⏰ 앱에서 타이머 종료 신호 수신! 알림 불빛 작동")
+    
+    # 램프를 깜빡여서 사용자에게 시간이 다 되었음을 알림
+    led.blink_alert() 
+    
+    #  알림 후에 램프를 아예 꺼버림
+    await runtime.set_mode("standby")
+    
+    return {"status": "alert_triggered"}
 
 # 3. 카메라 AI 신호 수신 (다른 인원이 보낼 0, 1 신호)
 @app.post("/alert")
