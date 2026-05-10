@@ -40,6 +40,10 @@ class FlowLampApi {
     return _postQuery('/brightness', {'value': value.toString()});
   }
 
+  Future<Map<String, dynamic>> notifyTimerDone() {
+    return _postQuery('/timer/done');
+  }
+
   Future<Map<String, dynamic>> setNightMode(bool active) {
     return _postQuery('/mode/night', {'active': active.toString()});
   }
@@ -52,9 +56,9 @@ class FlowLampApi {
   }
 
   Future<Map<String, dynamic>> _postQuery(
-    String path,
-    Map<String, String> queryParameters,
-  ) async {
+    String path, [
+    Map<String, String> queryParameters = const {},
+  ]) async {
     final uri = Uri.parse(
       '$baseUrl$path',
     ).replace(queryParameters: queryParameters);

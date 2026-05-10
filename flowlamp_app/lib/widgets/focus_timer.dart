@@ -1,28 +1,28 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+
 import 'package:flutter/cupertino.dart';
-import 'package:http/http.dart' as http; // 👈 통신용 패키지 추가
+import 'package:flutter/material.dart';
+
+import '../services/flowlamp_api.dart';
 
 class FocusTimerSection extends StatefulWidget {
-  const FocusTimerSection({Key? key}) : super(key: key);
+  const FocusTimerSection({super.key});
 
   @override
   State<FocusTimerSection> createState() => _FocusTimerSectionState();
 }
 
 class _FocusTimerSectionState extends State<FocusTimerSection> {
-  // 1. 디폴트 시간을 00:00 (0초)로 변경
-  int initialTimeInSeconds = 0; 
-  int remainingTimeInSeconds = 0; 
-  bool isRunning = false; 
+  final FlowLampApi _api = FlowLampApi();
+
+  int initialTimeInSeconds = 0;
+  int remainingTimeInSeconds = 0;
+  bool isRunning = false;
   Timer? _timer;
 
-  // ⚠️ 중요: 나중에 라즈베리 파이가 연결된 실제 Wi-Fi IP 주소로 변경해야 합니다.
-final String rpiUrl = "http://127.0.0.1:8000";
-
   String get formattedTime {
-    int minutes = remainingTimeInSeconds ~/ 60;
-    int seconds = remainingTimeInSeconds % 60;
+    final minutes = remainingTimeInSeconds ~/ 60;
+    final seconds = remainingTimeInSeconds % 60;
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
@@ -31,35 +31,31 @@ final String rpiUrl = "http://127.0.0.1:8000";
     return remainingTimeInSeconds / initialTimeInSeconds;
   }
 
-  // 👉 라즈베리 파이에 종료 신호를 쏘는 함수 추가
   Future<void> _sendAlertSignal() async {
     try {
-      final url = Uri.parse('$rpiUrl/timer/done');
-      final response = await http.post(url);
-      if (response.statusCode == 200) {
-        print("서버에 타이머 종료 신호 전송 성공!");
-      }
-    } catch (e) {
-      print("통신 실패: $e");
+      await _api.notifyTimerDone();
+      print('Timer done signal sent');
+    } catch (error) {
+      print('Timer done signal failed: $error');
     }
   }
 
   void startTimer() {
-    if (_timer != null) _timer!.cancel();
-    setState(() { isRunning = true; });
+    _timer?.cancel();
+    setState(() {
+      isRunning = true;
+    });
+
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {
         if (remainingTimeInSeconds > 0) {
           remainingTimeInSeconds--;
-          
-          // 2. 시간이 0이 되는 순간 처리
+
           if (remainingTimeInSeconds == 0) {
             timer.cancel();
             isRunning = false;
-            
-            // 💡 앱 알림창을 띄우는 동시에 라즈베리 파이로 조명 깜빡임 신호 전송!
-            _sendAlertSignal(); 
-            _showTimeUpDialog(); 
+            _sendAlertSignal();
+            _showTimeUpDialog();
           }
         } else {
           timer.cancel();
@@ -70,8 +66,10 @@ final String rpiUrl = "http://127.0.0.1:8000";
   }
 
   void pauseTimer() {
-    if (_timer != null) _timer!.cancel();
-    setState(() { isRunning = false; });
+    _timer?.cancel();
+    setState(() {
+      isRunning = false;
+    });
   }
 
   void toggleTimer() {
@@ -80,19 +78,19 @@ final String rpiUrl = "http://127.0.0.1:8000";
     } else if (remainingTimeInSeconds > 0) {
       startTimer();
     } else {
-      // 시간 설정이 00:00일 때 재생을 누르면 시간 설정창을 띄워주는 UX 센스!
       _selectTime(context);
     }
   }
 
-  // 3. 시간 종료 알림창 함수
   void _showTimeUpDialog() {
     showDialog(
       context: context,
-      barrierDismissible: false, // 바깥 영역 터치로 닫히지 않게 (확인 버튼을 누르도록)
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20.0)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20.0),
+          ),
           title: const Row(
             children: [
               Icon(Icons.alarm_on, color: Colors.amber, size: 28),
@@ -107,9 +105,16 @@ final String rpiUrl = "http://127.0.0.1:8000";
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.pop(context); // 창 닫기
+                Navigator.pop(context);
               },
-              child: const Text('확인', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+              child: const Text(
+                '확인',
+                style: TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
             ),
           ],
         );
@@ -118,29 +123,37 @@ final String rpiUrl = "http://127.0.0.1:8000";
   }
 
   Future<void> _selectTime(BuildContext context) async {
-    bool wasRunning = isRunning;
+    final wasRunning = isRunning;
     if (wasRunning) pauseTimer();
 
-    Duration tempDuration = Duration(seconds: initialTimeInSeconds);
+    var tempDuration = Duration(seconds: initialTimeInSeconds);
 
     await showDialog(
       context: context,
       builder: (BuildContext builder) {
         return Dialog(
           backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20.0)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20.0),
+          ),
           child: SizedBox(
             height: 300,
             child: Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 12.0,
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       TextButton(
                         onPressed: () => Navigator.pop(context),
-                        child: const Text('취소', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                        child: const Text(
+                          '취소',
+                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                        ),
                       ),
                       TextButton(
                         onPressed: () {
@@ -152,7 +165,14 @@ final String rpiUrl = "http://127.0.0.1:8000";
                           });
                           Navigator.pop(context);
                         },
-                        child: const Text('확인', style: TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
+                        child: const Text(
+                          '확인',
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -211,15 +231,15 @@ final String rpiUrl = "http://127.0.0.1:8000";
                 child: Text(
                   formattedTime,
                   style: TextStyle(
-                    fontSize: 56, 
-                    color: Colors.grey.shade700, 
-                    fontWeight: FontWeight.bold
+                    fontSize: 56,
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
             ),
             Positioned(
-              bottom: -16, 
+              bottom: -16,
               child: GestureDetector(
                 onTap: toggleTimer,
                 child: Container(
@@ -229,7 +249,11 @@ final String rpiUrl = "http://127.0.0.1:8000";
                     shape: BoxShape.circle,
                     color: Colors.white,
                     boxShadow: [
-                      BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 10, offset: const Offset(0, 4)),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.15),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
                     ],
                   ),
                   child: Icon(
@@ -244,8 +268,13 @@ final String rpiUrl = "http://127.0.0.1:8000";
         ),
         const SizedBox(height: 40),
         Text(
-          "FOCUS",
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: 1.5, color: Colors.grey.shade800),
+          'FOCUS',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.5,
+            color: Colors.grey.shade800,
+          ),
         ),
       ],
     );
