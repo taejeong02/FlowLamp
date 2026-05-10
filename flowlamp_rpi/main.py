@@ -1,22 +1,20 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
-<<<<<<< HEAD
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
-=======
 
 from fastapi import FastAPI, HTTPException, Query
->>>>>>> 7f49034e97268e790c3e959370be3fef907a87d8
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from devices.led import LEDController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
 from modes.test_mode import TestMode
-import asyncio
 
 led = LEDController()
 night_schedule = {"is_on": False, "start": "23:00", "end": "06:00"}
+
 
 class TestInput(BaseModel):
     trigger: str
@@ -66,42 +64,38 @@ class LampRuntime:
 
 runtime = LampRuntime(led)
 
-# 👈 추가된 부분: 1분마다 시간을 확인해서 야간 모드를 켜고 끄는 백그라운드 루프
+
 async def time_checker_loop():
     while True:
         if night_schedule["is_on"]:
-            now = datetime.now()
-            current_time = now.strftime("%H:%M")
+            current_time = datetime.now().strftime("%H:%M")
             start = night_schedule["start"]
             end = night_schedule["end"]
 
-            # 자정을 넘기는 시간 계산 (예: 23:00 ~ 06:00)
-            if start > end: 
+            if start > end:
                 is_night_time = current_time >= start or current_time <= end
             else:
                 is_night_time = start <= current_time <= end
 
-            # 조건에 맞으면 LED 상태 변경
             if is_night_time and not led.is_night_mode:
                 led.set_night_mode(True)
-                print("🌙 야간 모드 자동 켜짐!")
+                print("Night mode enabled automatically")
             elif not is_night_time and led.is_night_mode:
                 led.set_night_mode(False)
-                print("☀️ 야간 모드 자동 꺼짐!")
-        
-        await asyncio.sleep(60) # 60초(1분) 대기 후 다시 루프 돎
+                print("Night mode disabled automatically")
 
-# 👇 수정된 부분: 앱 실행 시 타임 체커도 같이 실행되도록 등록
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     runtime_task = asyncio.create_task(runtime.start())
-    time_checker_task = asyncio.create_task(time_checker_loop()) # 타임 체커 시작
+    time_checker_task = asyncio.create_task(time_checker_loop())
     yield
     runtime_task.cancel()
-    time_checker_task.cancel() # 타임 체커 종료
+    time_checker_task.cancel()
 
 
-app = FastAPI(lifespan=lifespan)
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -131,7 +125,7 @@ async def set_mode(mode_name: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"mode": runtime.current_mode.name}
 
-# 1. 앱 제어: 전원 ON/OFF
+
 @app.post("/power")
 async def toggle_power(status: str):
     if status == "on":
@@ -183,51 +177,39 @@ async def send_test_input(test_input: TestInput):
         "is_on": led.is_on,
     }
 
-# 2. 앱 제어: 야간 모드 스케줄링 설정
+
 @app.post("/night_mode/schedule")
 async def set_night_schedule(is_on: bool, start_time: str, end_time: str):
-    """
-    앱에서 시작/종료 시간을 설정할 때 호출하는 엔드포인트
-    - start_time, end_time 예시: "23:00", "06:00"
-    """
     night_schedule["is_on"] = is_on
     night_schedule["start"] = start_time
     night_schedule["end"] = end_time
-    
-    # 만약 스위치를 껐다면 즉시 야간 모드 해제
+
     if not is_on and led.is_night_mode:
         led.set_night_mode(False)
-        print("☀️ 야간 모드 즉시 해제됨")
-        
-    return {"message": "야간 모드 스케줄 저장 완료", "data": night_schedule}
+        print("Night mode disabled immediately")
 
-# 2. 앱 제어: 집중 타이머 종료 알림 수신
+    return {"message": "night schedule saved", "data": night_schedule}
+
+
 @app.post("/timer/done")
 async def timer_done_alert():
-    print("⏰ 앱에서 타이머 종료 신호 수신! 알림 불빛 작동")
-    
-    # 램프를 깜빡여서 사용자에게 시간이 다 되었음을 알림
-    led.blink_alert() 
-    
-    #  알림 후에 램프를 아예 꺼버림
+    print("Timer done signal received")
+    led.blink_alert()
     await runtime.set_mode("standby")
-    
     return {"status": "alert_triggered"}
 
-# 3. 카메라 AI 신호 수신 (다른 인원이 보낼 0, 1 신호)
+
 @app.post("/alert")
 async def receive_ai_signal(signal: int):
-    """
-    signal 1: 거북목 또는 졸음 감지됨
-    signal 0: 정상 상태
-    """
     if signal == 1:
-        print("🚨 경고 신호 수신: 사용자 알림 시작")
+        print("Alert signal received")
         led.blink_alert()
         return {"alert": "triggered"}
     return {"alert": "normal"}
 
+
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("FLOWLAMP_PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
