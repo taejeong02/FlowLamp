@@ -10,10 +10,11 @@ class FakeFlowLampApi extends FlowLampApi {
 
   bool isOn = false;
   List<int> color = [255, 255, 255];
+  int brightness = 50;
 
   @override
   Future<Map<String, dynamic>> getStatus() async {
-    return {'is_on': isOn, 'color': color};
+    return {'is_on': isOn, 'color': color, 'brightness': brightness};
   }
 
   @override
@@ -30,6 +31,12 @@ class FakeFlowLampApi extends FlowLampApi {
   }) async {
     color = [red, green, blue];
     return {'color': color, 'is_on': isOn};
+  }
+
+  @override
+  Future<Map<String, dynamic>> setBrightness(int value) async {
+    brightness = value;
+    return {'brightness': brightness, 'is_on': isOn};
   }
 }
 
@@ -68,5 +75,23 @@ void main() {
     await tester.pump();
 
     expect(api.color, isNot([255, 255, 255]));
+  });
+
+  testWidgets('brightness slider sends a brightness request when drag ends', (
+    tester,
+  ) async {
+    final api = FakeFlowLampApi();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyHomePage(title: 'Flow_Lamp', api: api),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(Slider).at(1), const Offset(300, 0));
+    await tester.pump();
+
+    expect(api.brightness, isNot(50));
   });
 }

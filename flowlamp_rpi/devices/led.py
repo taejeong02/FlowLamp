@@ -17,11 +17,12 @@ class LEDController:
         
         self.is_on = False
         self.is_night_mode = False
+        self.brightness = self.LED_BRIGHTNESS
         self.current_color = (255, 255, 255) # 초기값: 흰색
         self.alert_running = False
 
         if HAS_HARDWARE:
-            self.strip = PixelStrip(self.LED_COUNT, self.LED_PIN, 800000, 10, False, self.LED_BRIGHTNESS)
+            self.strip = PixelStrip(self.LED_COUNT, self.LED_PIN, 800000, 10, False, self.brightness)
             self.strip.begin()
         else:
             self.strip = None
@@ -60,6 +61,20 @@ class LEDController:
 
     def _clamp_color_value(self, value):
         return max(0, min(255, int(value)))
+
+    def set_brightness(self, value):
+        percent = max(0, min(100, int(value)))
+        self.brightness = round(percent / 100 * 255)
+
+        if HAS_HARDWARE and self.strip:
+            self.strip.setBrightness(self.brightness)
+
+        if self.is_on:
+            self._apply_color(*self.current_color)
+
+    @property
+    def brightness_percent(self):
+        return round(self.brightness / 255 * 100)
 
     def set_night_mode(self, active: bool):
         """야간 모드: 블루라이트를 줄이고 따뜻한 색감 적용"""

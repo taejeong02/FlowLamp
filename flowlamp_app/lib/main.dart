@@ -46,6 +46,7 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isStatusLoading = true;
   bool _isPowerLoading = false;
   bool _isColorLoading = false;
+  bool _isBrightnessLoading = false;
   double sliderValue = 0;
   double brightness = 50;
 
@@ -67,6 +68,8 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() {
         isOn = response['is_on'] as bool? ?? false;
         sliderValue = _sliderValueFromColor(response['color']) ?? sliderValue;
+        brightness =
+            _brightnessFromStatus(response['brightness']) ?? brightness;
       });
     } catch (error) {
       _showLampError('Failed to load lamp status', error);
@@ -132,6 +135,33 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _setBrightnessFromSlider(double value) async {
+    if (_isBrightnessLoading) return;
+
+    final nextBrightness = value.round().clamp(0, 100).toInt();
+    setState(() {
+      _isBrightnessLoading = true;
+    });
+
+    try {
+      final response = await _api.setBrightness(nextBrightness);
+      if (!mounted) return;
+      setState(() {
+        brightness =
+            _brightnessFromStatus(response['brightness']) ??
+            nextBrightness.toDouble();
+      });
+    } catch (error) {
+      _showLampError('Failed to change lamp brightness', error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isBrightnessLoading = false;
+        });
+      }
+    }
+  }
+
   void _showLampError(String message, Object error) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -190,6 +220,11 @@ class _MyHomePageState extends State<MyHomePage> {
     return value.clamp(0, 255) / 255;
   }
 
+  double? _brightnessFromStatus(Object? value) {
+    if (value is! num) return null;
+    return value.clamp(0, 100).toDouble();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -238,11 +273,13 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
               BrightnessSlider(
                 value: brightness,
+                isEnabled: !_isBrightnessLoading,
                 onChanged: (value) {
                   setState(() {
                     brightness = value;
                   });
                 },
+                onChangeEnd: _setBrightnessFromSlider,
               ),
               const SleepingButton(),
               Row(

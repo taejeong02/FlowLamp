@@ -86,6 +86,7 @@ async def get_status():
         "is_on": led.is_on,
         "night_mode": led.is_night_mode,
         "color": led.current_color,
+        "brightness": led.brightness_percent,
     }
 
 
@@ -121,6 +122,16 @@ async def set_color(
     return {
         "status": "success",
         "color": led.current_color,
+        "is_on": led.is_on,
+    }
+
+
+@app.post("/brightness")
+async def set_brightness(value: int = Query(..., ge=0, le=100)):
+    led.set_brightness(value)
+    return {
+        "status": "success",
+        "brightness": led.brightness_percent,
         "is_on": led.is_on,
     }
 
