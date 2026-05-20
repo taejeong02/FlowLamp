@@ -1,7 +1,11 @@
+import math
+import os
+import time
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import cv2
 import mediapipe as mp
-import math
-import time
 
 # --- 설정 ---
 BLINK_THRESHOLD = 0.20
@@ -9,22 +13,6 @@ DROWSY_TIME_LIMIT = 5.0
 
 DEAD_ZONE_XY = 40      # 좌우/상하 중앙 허용 오차(px)
 DEAD_ZONE_Z = 25       # 앞뒤 손 크기 허용 오차(px)
-
-mp_face_mesh = mp.solutions.face_mesh
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-
-face_mesh = mp_face_mesh.FaceMesh(
-    refine_landmarks=True,
-    min_detection_confidence=0.5
-)
-
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
-)
 
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
@@ -103,7 +91,39 @@ drowsy_detected = False
 # 앞뒤 기준 손 크기
 base_hand_size = 0
 
-cap = cv2.VideoCapture(0)
+CAMERA_INDEX = 0
+cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+
+if not cap.isOpened():
+    video_devices = sorted(
+        name for name in os.listdir("/dev")
+        if name.startswith("video")
+    ) if os.path.isdir("/dev") else []
+
+    print(f"ERROR: Could not open camera index {CAMERA_INDEX}.")
+    if video_devices:
+        print("Detected video devices:", ", ".join(f"/dev/{name}" for name in video_devices))
+        print("Try changing CAMERA_INDEX in handtest.py if your camera is not /dev/video0.")
+    else:
+        print("No /dev/video* camera devices were detected.")
+        print("Check the camera connection and run: rpicam-hello")
+    raise SystemExit(1)
+
+mp_face_mesh = mp.solutions.face_mesh
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
+face_mesh = mp_face_mesh.FaceMesh(
+    refine_landmarks=True,
+    min_detection_confidence=0.5
+)
+
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.5
+)
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -129,7 +149,9 @@ while cap.isOpened():
 
     if face_result.multi_face_landmarks:
         for face_landmarks in face_result.multi_face_landmarks:
-            ear = get_ear(face_landmarks.landmark, LEFT_EYE + RIGHT_EYE)
+            left_ear = get_ear(face_landmarks.landmark, LEFT_EYE)
+            right_ear = get_ear(face_landmarks.landmark, RIGHT_EYE)
+            ear = (left_ear + right_ear) / 2.0
 
             if ear < BLINK_THRESHOLD:
                 if eyes_closed_start_time == 0:
