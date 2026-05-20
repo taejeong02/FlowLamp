@@ -1,7 +1,11 @@
+import math
+import os
+import time
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import cv2
 import mediapipe as mp
-import math
-import time
 
 # --- 설정 ---
 BLINK_THRESHOLD = 0.20
@@ -18,22 +22,6 @@ ROTATION_BRIGHTNESS_STEP = 1
 ROTATION_BRIGHTNESS_SENSITIVITY = 8
 ROTATION_HISTORY_SIZE = 6
 ROTATION_STABLE_FRAMES = 4
-
-mp_face_mesh = mp.solutions.face_mesh
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-
-face_mesh = mp_face_mesh.FaceMesh(
-    refine_landmarks=True,
-    min_detection_confidence=0.5
-)
-
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
-)
 
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
@@ -117,7 +105,7 @@ def get_depth_command(error_z):
         return f"HEAD BACKWARD {int(abs(error_z))}px"
     else:
         return "STOP"
-    
+
 def get_hand_rotation(hand_landmarks):
     lm = hand_landmarks.landmark
 
@@ -148,9 +136,41 @@ base_hand_size = 0
 fist_rotation_history = []
 fist_rotation_reference = None
 
-cap = cv2.VideoCapture(0)
+CAMERA_INDEX = 0
+cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+if not cap.isOpened():
+    video_devices = sorted(
+        name for name in os.listdir("/dev")
+        if name.startswith("video")
+    ) if os.path.isdir("/dev") else []
+
+    print(f"ERROR: Could not open camera index {CAMERA_INDEX}.")
+    if video_devices:
+        print("Detected video devices:", ", ".join(f"/dev/{name}" for name in video_devices))
+        print("Try changing CAMERA_INDEX in handtest.py if your camera is not /dev/video0.")
+    else:
+        print("No /dev/video* camera devices were detected.")
+        print("Check the camera connection and run: rpicam-hello")
+    raise SystemExit(1)
+
+mp_face_mesh = mp.solutions.face_mesh
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
+face_mesh = mp_face_mesh.FaceMesh(
+    refine_landmarks=True,
+    min_detection_confidence=0.5
+)
+
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.5
+)
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -176,7 +196,9 @@ while cap.isOpened():
 
     if face_result.multi_face_landmarks:
         for face_landmarks in face_result.multi_face_landmarks:
-            ear = get_ear(face_landmarks.landmark, LEFT_EYE + RIGHT_EYE)
+            left_ear = get_ear(face_landmarks.landmark, LEFT_EYE)
+            right_ear = get_ear(face_landmarks.landmark, RIGHT_EYE)
+            ear = (left_ear + right_ear) / 2.0
 
             if ear < BLINK_THRESHOLD:
                 if eyes_closed_start_time == 0:
@@ -299,7 +321,7 @@ while cap.isOpened():
 
                 cv2.putText(frame, f"Motor Z: {move_z}", (50, 520),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
-                
+
                 cv2.putText(frame, f"Hand Rotation: {int(rotation_angle)} deg", (50, 560),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
