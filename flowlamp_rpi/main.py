@@ -8,17 +8,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from devices.led import LEDController
+from devices.motor import MotorController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
 from modes.test_mode import TestMode
 
 led = LEDController()
+motor = MotorController()
 night_schedule = {"is_on": False, "start": "23:00", "end": "06:00"}
 
 
 class TestInput(BaseModel):
     trigger: str
     value: str | int | float | bool
+
+
+class MotorMoveInput(BaseModel):
+    position: int
+    velocity: int | None = None
+
+
+class MotorMultiMoveInput(BaseModel):
+    positions: dict[int, int]
+    velocity: int | None = None
+
+
+class MotorPoseInput(BaseModel):
+    pose: str
+    velocity: int | None = None
 
 
 class LampRuntime:
@@ -89,11 +106,13 @@ async def time_checker_loop():
 
 @asynccontextmanager
 async def lifespan(_app):
+    motor.connect()
     runtime_task = asyncio.create_task(runtime.start())
     time_checker_task = asyncio.create_task(time_checker_loop())
     yield
     runtime_task.cancel()
     time_checker_task.cancel()
+    motor.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -114,6 +133,7 @@ async def get_status():
         "night_mode": led.is_night_mode,
         "color": led.current_color,
         "brightness": led.brightness_percent,
+        "motor": motor.status(),
     }
 
 
@@ -161,6 +181,38 @@ async def set_brightness(value: int = Query(..., ge=0, le=100)):
         "brightness": led.brightness_percent,
         "is_on": led.is_on,
     }
+
+
+@app.get("/motor/status")
+async def get_motor_status():
+    return motor.status()
+
+
+@app.post("/motor/{motor_id}/position")
+async def move_motor(motor_id: int, move: MotorMoveInput):
+    try:
+        result = motor.move_motor(motor_id, move.position, move.velocity)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", "motor": result}
+
+
+@app.post("/motor/positions")
+async def move_motors(move: MotorMultiMoveInput):
+    try:
+        result = motor.move_all(move.positions, move.velocity)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", "motors": result}
+
+
+@app.post("/motor/pose")
+async def apply_motor_pose(move: MotorPoseInput):
+    try:
+        result = motor.apply_pose(move.pose, move.velocity)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", "pose": move.pose, "motors": result}
 
 
 @app.post("/test/input")

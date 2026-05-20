@@ -1,6 +1,8 @@
 # Python
 venv/
 .venv/
+venv311/
+.venv311/
 env/
 ENV/
 __pycache__/
@@ -54,3 +56,5 @@ Thumbs.db
 
 # Logs
 *.log
+
+
