@@ -14,6 +14,15 @@ DROWSY_TIME_LIMIT = 5.0
 DEAD_ZONE_XY = 40      # 좌우/상하 중앙 허용 오차(px)
 DEAD_ZONE_Z = 25       # 앞뒤 손 크기 허용 오차(px)
 
+BRIGHTNESS_MIN = 0
+BRIGHTNESS_MAX = 100
+BRIGHTNESS_LEVEL = 50
+ROTATION_BRIGHTNESS_THRESHOLD = 12
+ROTATION_BRIGHTNESS_STEP = 1
+ROTATION_BRIGHTNESS_SENSITIVITY = 8
+ROTATION_HISTORY_SIZE = 6
+ROTATION_STABLE_FRAMES = 4
+
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
 
@@ -45,6 +54,21 @@ def is_open_palm(hand_landmarks):
     pinky_up = lm[20].y < lm[18].y
 
     return index_up and middle_up and ring_up and pinky_up
+
+def is_closed_fist(hand_landmarks, frame_w, frame_h):
+    lm = hand_landmarks.landmark
+    palm_x = (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5 * frame_w
+    palm_y = (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5 * frame_h
+    hand_size = get_hand_size(hand_landmarks, frame_w, frame_h)
+    threshold = hand_size * 0.45
+
+    for idx in [4, 8, 12, 16, 20]:
+        tip_x = lm[idx].x * frame_w
+        tip_y = lm[idx].y * frame_h
+        if math.hypot(tip_x - palm_x, tip_y - palm_y) > threshold:
+            return False
+
+    return True
 
 def get_hand_size(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
@@ -82,6 +106,25 @@ def get_depth_command(error_z):
     else:
         return "STOP"
 
+def get_hand_rotation(hand_landmarks):
+    lm = hand_landmarks.landmark
+
+    # 왼쪽과 오른쪽 손바닥 끝점 간 각도 계산
+    index_base = lm[5]
+    pinky_base = lm[17]
+
+    dx = pinky_base.x - index_base.x
+    dy = pinky_base.y - index_base.y
+    angle = math.degrees(math.atan2(dy, dx))
+
+    # 손바닥이 거의 수평일 때를 0도로 정규화
+    if angle > 90:
+        angle -= 180
+    elif angle < -90:
+        angle += 180
+
+    return angle
+
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
@@ -90,9 +133,13 @@ drowsy_detected = False
 
 # 앞뒤 기준 손 크기
 base_hand_size = 0
+fist_rotation_history = []
+fist_rotation_reference = None
 
 CAMERA_INDEX = 0
 cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 if not cap.isOpened():
     video_devices = sorted(
@@ -170,6 +217,7 @@ while cap.isOpened():
 
     v_detected = False
     palm_detected = False
+    fist_detected = False
 
     if hand_result.multi_hand_landmarks:
         for hand_landmarks in hand_result.multi_hand_landmarks:
@@ -180,8 +228,41 @@ while cap.isOpened():
             if is_v_gesture(hand_landmarks):
                 v_detected = True
 
+            rotation_angle = get_hand_rotation(hand_landmarks)
+
             if is_open_palm(hand_landmarks):
                 palm_detected = True
+            else:
+                # 손바닥 tracking이 아닌 경우에만 밝기 참조를 초기화
+                pass
+
+            if is_closed_fist(hand_landmarks, frame_w, frame_h):
+                fist_detected = True
+                fist_rotation_history.append(rotation_angle)
+                if len(fist_rotation_history) > ROTATION_HISTORY_SIZE:
+                    fist_rotation_history.pop(0)
+            else:
+                fist_rotation_history.clear()
+                fist_rotation_reference = None
+
+            smooth_rotation = rotation_angle
+            if len(fist_rotation_history) >= ROTATION_STABLE_FRAMES:
+                smooth_rotation = sum(fist_rotation_history) / len(fist_rotation_history)
+                if fist_rotation_reference is None:
+                    fist_rotation_reference = smooth_rotation
+
+            if fist_rotation_reference is None:
+                brightness_msg = "Show fist to set brightness reference"
+            else:
+                delta_angle = smooth_rotation - fist_rotation_reference
+                if delta_angle > ROTATION_BRIGHTNESS_THRESHOLD:
+                    brightness_msg = f"BRIGHTNESS UP {int(delta_angle)}°"
+                elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
+                    brightness_msg = f"BRIGHTNESS DOWN {int(abs(delta_angle))}°"
+                else:
+                    brightness_msg = "BRIGHTNESS HOLD"
+
+            if palm_detected:
 
                 # 손 중심 좌표
                 hand_x = int(lm[9].x * frame_w)
@@ -240,6 +321,34 @@ while cap.isOpened():
 
                 cv2.putText(frame, f"Motor Z: {move_z}", (50, 520),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
+
+                cv2.putText(frame, f"Hand Rotation: {int(rotation_angle)} deg", (50, 560),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+            if fist_detected and fist_rotation_reference is not None and len(fist_rotation_history) >= ROTATION_STABLE_FRAMES:
+                delta_angle = smooth_rotation - fist_rotation_reference
+                if delta_angle > ROTATION_BRIGHTNESS_THRESHOLD:
+                    delta = max(ROTATION_BRIGHTNESS_STEP, int((delta_angle - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY))
+                    BRIGHTNESS_LEVEL = min(BRIGHTNESS_MAX, BRIGHTNESS_LEVEL + delta)
+                elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
+                    delta = max(ROTATION_BRIGHTNESS_STEP, int((abs(delta_angle) - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY))
+                    BRIGHTNESS_LEVEL = max(BRIGHTNESS_MIN, BRIGHTNESS_LEVEL - delta)
+
+            if fist_detected:
+                if fist_rotation_reference is not None:
+                    delta_angle = smooth_rotation - fist_rotation_reference
+                    cv2.putText(frame, f"Rotation Δ: {int(delta_angle)} deg", (50, 590),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+                    cv2.putText(frame, f"Reference Angle: {int(fist_rotation_reference)} deg", (50, 620),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 0), 2)
+                    y_offset = 660
+                else:
+                    y_offset = 600
+
+                cv2.putText(frame, brightness_msg, (50, y_offset),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                cv2.putText(frame, f"Brightness: {BRIGHTNESS_LEVEL}%", (50, y_offset + 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
 
     # 손바닥이 안 보이면 기준값 초기화
     if not palm_detected:
