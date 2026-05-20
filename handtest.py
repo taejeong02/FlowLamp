@@ -23,7 +23,6 @@ ROTATION_BRIGHTNESS_SENSITIVITY = 8
 ROTATION_HISTORY_SIZE = 6
 ROTATION_STABLE_FRAMES = 4
 
-<<<<<<< HEAD
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -39,8 +38,6 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 
-=======
->>>>>>> 9c230b2a259c2c6a4ee4f4a2e94b3d8fd02cadf6
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
 
