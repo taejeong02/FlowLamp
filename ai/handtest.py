@@ -1,4 +1,5 @@
 import math
+import os
 import time
 import cv2
 import mediapipe as mp
@@ -18,6 +19,11 @@ ROTATION_BRIGHTNESS_STEP = 1
 ROTATION_BRIGHTNESS_SENSITIVITY = 8
 ROTATION_HISTORY_SIZE = 6
 ROTATION_STABLE_FRAMES = 4
+FIST_SCORE_THRESHOLD = 1.00
+CAMERA_INDEX = os.environ.get("CAMERA_INDEX", "8")
+CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
+CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
@@ -71,23 +77,23 @@ def get_hand_size(hand_landmarks, frame_w, frame_h):
     y9 = lm[9].y * frame_h
     return math.hypot(x9 - x0, y9 - y0)
 
-def is_closed_fist(hand_landmarks, frame_w, frame_h):
+def get_fist_score(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
 
     palm_x = (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5 * frame_w
     palm_y = (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5 * frame_h
+    hand_size = max(get_hand_size(hand_landmarks, frame_w, frame_h), 1)
 
-    hand_size = get_hand_size(hand_landmarks, frame_w, frame_h)
-    threshold = hand_size * 0.45
+    tip_distances = []
+    for tip_idx in [8, 12, 16, 20]:
+        tip_x = lm[tip_idx].x * frame_w
+        tip_y = lm[tip_idx].y * frame_h
+        tip_distances.append(math.hypot(tip_x - palm_x, tip_y - palm_y))
 
-    for idx in [4, 8, 12, 16, 20]:
-        tip_x = lm[idx].x * frame_w
-        tip_y = lm[idx].y * frame_h
+    return sum(tip_distances) / len(tip_distances) / hand_size
 
-        if math.hypot(tip_x - palm_x, tip_y - palm_y) > threshold:
-            return False
-
-    return True
+def is_closed_fist(hand_landmarks, frame_w, frame_h):
+    return get_fist_score(hand_landmarks, frame_w, frame_h) < FIST_SCORE_THRESHOLD
 
 def get_tracking_command(error_x, error_y):
     move_x = "STOP"
@@ -141,15 +147,87 @@ base_hand_size = 0
 fist_rotation_history = []
 fist_rotation_reference = None
 
-CAMERA_INDEX = 0
+class PrefetchedCapture:
+    def __init__(self, cap, first_frame):
+        self.cap = cap
+        self.first_frame = first_frame
 
-cap = cv2.VideoCapture(CAMERA_INDEX)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    def isOpened(self):
+        return self.cap.isOpened()
 
-if not cap.isOpened():
-    print("웹캠을 열 수 없습니다. CAMERA_INDEX를 1로 바꿔보세요.")
+    def read(self):
+        if self.first_frame is not None:
+            frame = self.first_frame
+            self.first_frame = None
+            return True, frame
+        return self.cap.read()
+
+    def release(self):
+        self.cap.release()
+
+
+def get_video_indices():
+    if CAMERA_INDEX.lower() != "auto":
+        return [int(CAMERA_INDEX)]
+
+    if not os.path.isdir("/dev"):
+        return [1]
+
+    indices = []
+    for name in os.listdir("/dev"):
+        if name.startswith("video") and name[5:].isdigit():
+            indices.append(int(name[5:]))
+    return sorted(indices)
+
+
+def try_open_v4l2_camera(index):
+    cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+
+    if cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            return PrefetchedCapture(cap, frame)
+
+    cap.release()
+    return None
+
+
+def open_camera():
+    working_cameras = []
+
+    for index in get_video_indices():
+        cap = try_open_v4l2_camera(index)
+        if cap is not None:
+            working_cameras.append((index, cap))
+
+    if working_cameras:
+        selected_index, selected_cap = working_cameras[-1]
+        if CAMERA_INDEX.lower() == "auto" and len(working_cameras) >= 2:
+            selected_index, selected_cap = working_cameras[1]
+
+        for index, cap in working_cameras:
+            if cap is not selected_cap:
+                cap.release()
+
+        print(f"Camera opened: index={selected_index}, backend=V4L2")
+        return selected_cap
+
+    video_devices = [f"/dev/video{index}" for index in get_video_indices()]
+
+    print("ERROR: V4L2 카메라를 열 수 없습니다.")
+    if video_devices:
+        print("감지된 video 장치:", ", ".join(video_devices))
+        print("직접 지정하려면 예: CAMERA_INDEX=2 python ai/handtest.py")
+        print("자동 탐색하려면 예: CAMERA_INDEX=auto python ai/handtest.py")
+    else:
+        print("/dev/video* 장치가 없습니다. 카메라 연결을 확인하세요.")
     raise SystemExit(1)
+
+
+cap = open_camera()
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -206,10 +284,13 @@ while cap.isOpened():
 
             rotation_angle = get_hand_rotation(hand_landmarks)
 
-            if is_open_palm(hand_landmarks):
-                palm_detected = True
+            fist_score = get_fist_score(hand_landmarks, frame_w, frame_h)
+            current_fist_detected = fist_score < FIST_SCORE_THRESHOLD
 
-            if is_closed_fist(hand_landmarks, frame_w, frame_h):
+            cv2.putText(frame, f"Fist score: {fist_score:.2f} / {FIST_SCORE_THRESHOLD:.2f}", (20, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+            if current_fist_detected:
                 fist_detected = True
                 fist_rotation_history.append(rotation_angle)
 
@@ -218,6 +299,9 @@ while cap.isOpened():
             else:
                 fist_rotation_history.clear()
                 fist_rotation_reference = None
+
+            if not current_fist_detected and is_open_palm(hand_landmarks):
+                palm_detected = True
 
             smooth_rotation = rotation_angle
 
@@ -233,9 +317,9 @@ while cap.isOpened():
                 delta_angle = smooth_rotation - fist_rotation_reference
 
                 if delta_angle > ROTATION_BRIGHTNESS_THRESHOLD:
-                    brightness_msg = f"BRIGHTNESS UP {int(delta_angle)} deg"
+                    brightness_msg = f"RIGHT TURN: BRIGHTNESS UP {int(delta_angle)} deg"
                 elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
-                    brightness_msg = f"BRIGHTNESS DOWN {int(abs(delta_angle))} deg"
+                    brightness_msg = f"LEFT TURN: BRIGHTNESS DOWN {int(abs(delta_angle))} deg"
                 else:
                     brightness_msg = "BRIGHTNESS HOLD"
 
@@ -316,15 +400,20 @@ while cap.isOpened():
                 if fist_rotation_reference is not None:
                     delta_angle = smooth_rotation - fist_rotation_reference
 
-                    cv2.putText(frame, f"Rotation Delta: {int(delta_angle)} deg", (50, 590),
+                    cv2.putText(frame, "FIST DETECTED", (50, 160),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+
+                    cv2.putText(frame, f"Rotation Delta: {int(delta_angle)} deg", (50, 195),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                    cv2.putText(frame, f"Reference Angle: {int(fist_rotation_reference)} deg", (50, 620),
+                    cv2.putText(frame, f"Reference Angle: {int(fist_rotation_reference)} deg", (50, 230),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 0), 2)
 
-                    y_offset = 660
+                    y_offset = 265
                 else:
-                    y_offset = 600
+                    y_offset = 195
+                    cv2.putText(frame, "FIST DETECTED", (50, 160),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 
                 cv2.putText(frame, brightness_msg, (50, y_offset),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
