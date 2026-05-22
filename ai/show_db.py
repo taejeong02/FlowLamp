@@ -3,7 +3,9 @@ import os
 import sqlite3
 from datetime import datetime
 
-DB_PATH = "study_records.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "study_records.db")
+PARENT_DB_PATH = os.path.join(os.path.dirname(BASE_DIR), "study_records.db")
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS study_records (
@@ -11,9 +13,6 @@ CREATE TABLE IF NOT EXISTS study_records (
     study_date TEXT UNIQUE,
     turtle_neck_count INTEGER,
     drowsy_count INTEGER,
-    avg_head_angle REAL,
-    head_angle_total REAL,
-    head_angle_sample_count INTEGER,
     good_posture_time INTEGER,
     total_study_time INTEGER,
     pure_study_time INTEGER,
@@ -29,15 +28,71 @@ CREATE TABLE IF NOT EXISTS study_records (
 """
 
 
+def get_table_columns(conn, table_name="study_records"):
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    return [row[1] for row in cursor.fetchall()]
+
+
+def migrate_db_schema(db_path):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='study_records'")
+    if not cursor.fetchone():
+        conn.close()
+        return
+
+    columns = get_table_columns(conn)
+    obsolete_columns = {"avg_head_angle", "head_angle_total", "head_angle_sample_count"}
+    if not any(col in columns for col in obsolete_columns):
+        conn.close()
+        return
+
+    keep_columns = [
+        "id",
+        "study_date",
+        "turtle_neck_count",
+        "drowsy_count",
+        "good_posture_time",
+        "total_study_time",
+        "pure_study_time",
+        "away_count",
+        "away_time",
+        "drowsy_time",
+        "posture_score",
+        "focus_score",
+        "total_score",
+        "created_at",
+        "updated_at",
+    ]
+    keep_columns = [col for col in keep_columns if col in columns]
+
+    cursor.execute("ALTER TABLE study_records RENAME TO study_records_old")
+    cursor.execute(CREATE_TABLE_SQL)
+    cols_sql = ", ".join(keep_columns)
+    cursor.execute(f"INSERT INTO study_records ({cols_sql}) SELECT {cols_sql} FROM study_records_old")
+    cursor.execute("DROP TABLE study_records_old")
+    conn.commit()
+    conn.close()
+
+
 def init_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(CREATE_TABLE_SQL)
     conn.commit()
     conn.close()
+    migrate_db_schema(db_path)
 
 
-def get_records(db_path=DB_PATH, study_date=None):
+def resolve_db_path():
+    if os.path.exists(DB_PATH):
+        return DB_PATH
+    if os.path.exists(PARENT_DB_PATH):
+        return PARENT_DB_PATH
+    return DB_PATH
+
+
+def get_records(db_path, study_date=None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
@@ -90,21 +145,23 @@ def main():
     parser.add_argument("--reset-db", action="store_true", help="기존 DB 파일을 삭제하고 새로 초기화합니다.")
     args = parser.parse_args()
 
+    db_path = resolve_db_path()
+
     if args.reset_db:
-        if os.path.exists(DB_PATH):
-            os.remove(DB_PATH)
-        init_db()
-        print(f"{DB_PATH} 파일을 초기화하고 기존 데이터를 모두 삭제했습니다.")
+        if os.path.exists(db_path):
+            os.remove(db_path)
+        init_db(db_path)
+        print(f"{db_path} 파일을 초기화하고 기존 데이터를 모두 삭제했습니다.")
         return
 
-    init_db()
+    init_db(db_path)
 
     if args.init_db:
-        print(f"{DB_PATH} 파일이 준비되었습니다.")
+        print(f"{db_path} 파일이 준비되었습니다.")
         return
 
     if args.show_db or args.show_date:
-        records, columns = get_records(study_date=args.show_date)
+        records, columns = get_records(db_path, study_date=args.show_date)
         print_records(records, columns)
         return
 

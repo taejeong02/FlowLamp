@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import math
+import os
 import time
 import json
 import sqlite3
@@ -8,7 +9,8 @@ from collections import deque
 from datetime import datetime
 
 # --- 데이터베이스 초기화 ---
-DB_PATH = "study_records.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "study_records.db")
 
 def init_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
@@ -19,9 +21,6 @@ def init_db(db_path=DB_PATH):
             study_date TEXT UNIQUE,
             turtle_neck_count INTEGER,
             drowsy_count INTEGER,
-            avg_head_angle REAL,
-            head_angle_total REAL,
-            head_angle_sample_count INTEGER,
             good_posture_time INTEGER,
             total_study_time INTEGER,
             pure_study_time INTEGER,
@@ -47,8 +46,6 @@ def save_results_to_db(result_data, db_path=DB_PATH):
         SELECT
             turtle_neck_count,
             drowsy_count,
-            head_angle_total,
-            head_angle_sample_count,
             good_posture_time,
             total_study_time,
             pure_study_time,
@@ -64,16 +61,11 @@ def save_results_to_db(result_data, db_path=DB_PATH):
     existing = cursor.fetchone()
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    avg_head_angle = 0.0
-    head_angle_total = result_data.get("head_angle_total", 0.0)
-    head_angle_sample_count = result_data.get("head_angle_sample_count", 0)
 
     if existing:
         (
             old_turtle_neck_count,
             old_drowsy_count,
-            old_head_angle_total,
-            old_head_angle_sample_count,
             old_good_posture_time,
             old_total_study_time,
             old_pure_study_time,
@@ -91,11 +83,6 @@ def save_results_to_db(result_data, db_path=DB_PATH):
         away_count = old_away_count + result_data["away_count"]
         away_time = old_away_time + result_data["away_time"]
         drowsy_time = old_drowsy_time + result_data["drowsy_time"]
-        head_angle_total = old_head_angle_total + head_angle_total
-        head_angle_sample_count = old_head_angle_sample_count + head_angle_sample_count
-
-        if head_angle_sample_count > 0:
-            avg_head_angle = head_angle_total / head_angle_sample_count
 
         posture_score, focus_score, total_score = calculate_scores(
             total_study_time,
@@ -111,9 +98,6 @@ def save_results_to_db(result_data, db_path=DB_PATH):
             UPDATE study_records SET
                 turtle_neck_count = ?,
                 drowsy_count = ?,
-                avg_head_angle = ?,
-                head_angle_total = ?,
-                head_angle_sample_count = ?,
                 good_posture_time = ?,
                 total_study_time = ?,
                 pure_study_time = ?,
@@ -129,9 +113,6 @@ def save_results_to_db(result_data, db_path=DB_PATH):
             (
                 turtle_neck_count,
                 drowsy_count,
-                avg_head_angle,
-                head_angle_total,
-                head_angle_sample_count,
                 good_posture_time,
                 total_study_time,
                 pure_study_time,
@@ -146,18 +127,12 @@ def save_results_to_db(result_data, db_path=DB_PATH):
             )
         )
     else:
-        if head_angle_sample_count > 0:
-            avg_head_angle = head_angle_total / head_angle_sample_count
-
         cursor.execute(
             """
             INSERT INTO study_records (
                 study_date,
                 turtle_neck_count,
                 drowsy_count,
-                avg_head_angle,
-                head_angle_total,
-                head_angle_sample_count,
                 good_posture_time,
                 total_study_time,
                 pure_study_time,
@@ -169,15 +144,12 @@ def save_results_to_db(result_data, db_path=DB_PATH):
                 total_score,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result_data["study_date"],
                 result_data["turtle_neck_count"],
                 result_data["drowsy_count"],
-                avg_head_angle,
-                head_angle_total,
-                head_angle_sample_count,
                 result_data["good_posture_time"],
                 result_data["total_study_time"],
                 result_data["pure_study_time"],
@@ -262,23 +234,23 @@ def calculate_scores(
     if total_study_time <= 0:
         return 0, 0, 0
 
-    # 자세 점수 40점 만점
+    # 자세 점수 50점 만점
     posture_ratio = good_posture_time / total_study_time
-    posture_score = int(posture_ratio * 40)
+    posture_score = int(posture_ratio * 50)
 
     # 거북목 횟수가 많으면 감점
     posture_score -= turtle_neck_count * 1
-    posture_score = max(0, min(40, posture_score))
+    posture_score = max(0, min(50, posture_score))
 
-    # 집중 점수 40점 만점
+    # 집중 점수 50점 만점
     pure_study_time = max(0, total_study_time - away_time - drowsy_time)
     focus_ratio = pure_study_time / total_study_time
-    focus_score = int(focus_ratio * 40)
+    focus_score = int(focus_ratio * 50)
 
     # 자리 이탈 시간이 길면 감점
     if away_time >= 300:
         focus_score -= 5
-    focus_score = max(0, min(40, focus_score))
+    focus_score = max(0, min(50, focus_score))
 
     total_score = posture_score + focus_score
 
@@ -554,10 +526,6 @@ while cap.isOpened():
         drowsy_count
     )
 
-    avg_head_angle = 0
-    if neck_angle_sample_count > 0:
-        avg_head_angle = total_neck_angle / neck_angle_sample_count
-
     # =========================
     # 4. 화면 표시
     # =========================
@@ -591,10 +559,6 @@ end_time = time.time()
 total_study_time = end_time - start_time
 pure_study_time = max(0, total_study_time - away_time - drowsy_time)
 
-avg_head_angle = 0
-if neck_angle_sample_count > 0:
-    avg_head_angle = total_neck_angle / neck_angle_sample_count
-
 posture_score, focus_score, total_score = calculate_scores(
     total_study_time,
     good_posture_time,
@@ -608,7 +572,6 @@ result_data = {
     "study_date": study_date,
 
     "turtle_neck_count": turtle_neck_count,
-    "avg_head_angle": round(avg_head_angle, 2),
     "good_posture_time": int(good_posture_time),
 
     "total_study_time": int(total_study_time),
@@ -630,8 +593,6 @@ print(json.dumps(result_data, ensure_ascii=False, indent=4))
 # 데이터베이스에 결과 저장
 init_db()
 db_result_data = result_data.copy()
-db_result_data["head_angle_total"] = total_neck_angle
-db_result_data["head_angle_sample_count"] = neck_angle_sample_count
 save_results_to_db(db_result_data)
 print(f"결과가 {DB_PATH}에 저장되었습니다.")
 
