@@ -2,11 +2,19 @@ import cv2
 import mediapipe as mp
 import math
 import os
+import subprocess
 import time
 import json
 import sqlite3
 from collections import deque
 from datetime import datetime
+
+import numpy as np
+
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
+CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "1280"))
+CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "720"))
+CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
 
 # --- 데이터베이스 초기화 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -303,10 +311,92 @@ AWAY_HOLD_SECONDS = 3
 drowsy_count = 0
 drowsy_time = 0.0
 
-cap = cv2.VideoCapture(0)
-# 카메라 해상도 설정 (일반적으로 1280x720 또는 1920x1080 사용)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+class RpicamVideoCapture:
+    def __init__(self, camera_index, width, height, fps):
+        self.process = None
+        self.stdout = None
+        self.buffer = b""
+
+        command = [
+            "rpicam-vid",
+            "-t",
+            "0",
+            "--codec",
+            "mjpeg",
+            "--nopreview",
+            "--flush",
+            "--camera",
+            str(camera_index),
+            "--width",
+            str(width),
+            "--height",
+            str(height),
+            "--framerate",
+            str(fps),
+            "-o",
+            "-",
+        ]
+
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            self.stdout = self.process.stdout
+        except OSError as exc:
+            print(f"rpicam-vid 실행 실패: {exc}")
+
+    def isOpened(self):
+        return self.process is not None and self.process.poll() is None and self.stdout is not None
+
+    def read(self):
+        if not self.isOpened():
+            return False, None
+
+        while True:
+            chunk = self.stdout.read(4096)
+            if not chunk:
+                return False, None
+
+            self.buffer += chunk
+            start = self.buffer.find(b"\xff\xd8")
+            end = self.buffer.find(b"\xff\xd9", start + 2)
+
+            if start == -1:
+                self.buffer = self.buffer[-1:]
+                continue
+            if end == -1:
+                self.buffer = self.buffer[start:]
+                continue
+
+            jpg = self.buffer[start:end + 2]
+            self.buffer = self.buffer[end + 2:]
+            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                return True, frame
+
+    def release(self):
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+
+def open_camera():
+    cap = RpicamVideoCapture(CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS)
+    if cap.isOpened():
+        print(f"Raspberry Pi camera opened: camera={CAMERA_INDEX}")
+        return cap
+
+    print(f"라즈베리파이 카메라 모듈을 열 수 없습니다. CAMERA_INDEX={CAMERA_INDEX}")
+    print("카메라 연결 확인: rpicam-hello")
+    raise SystemExit(1)
+
+
+cap = open_camera()
 
 while cap.isOpened():
     ret, frame = cap.read()
