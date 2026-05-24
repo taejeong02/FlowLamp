@@ -1,95 +1,22 @@
 import 'package:flutter/material.dart';
-import 'widgets/colorslider.dart';
-import 'widgets/powerbutton.dart';
-import 'widgets/brightslider.dart';
+import 'main_screen.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const FlowLampApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class FlowLampApp extends StatelessWidget {
+  const FlowLampApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Flow Lamp',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.amber),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flow_Lamp'),
-    );
-  }
-}
-
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  bool isOn = false;
-  double sliderValue = 0.5;
-  double brightness = 50;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text("Flow Lamp")),
-      body: Container(
-        width: double.infinity, // 가로 전체 차지
-        padding: const EdgeInsets.only(top: 60), // 위쪽 위치 조절
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.start, // 위쪽 정렬
-          crossAxisAlignment: CrossAxisAlignment.center, // 가로 중앙
-          children: [
-            PowerButton(
-              isOn: isOn,
-              onTap: () {
-                setState(() {
-                  isOn = !isOn;
-                });
-              },
-            ),
-            ColorSlider(
-              value: sliderValue,
-              onChanged: (value) {
-                setState(() {
-                  sliderValue = value;
-                });
-              },
-            ),
-            BrightnessSlider(
-              value: brightness,
-              onChanged: (value) {
-                setState(() {
-                  brightness = value;
-                });
-              },
-            ),
-          ],
-        ),
-      ),
+      home: const MainScreen(),
     );
   }
 }
