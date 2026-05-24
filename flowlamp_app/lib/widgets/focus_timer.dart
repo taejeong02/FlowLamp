@@ -1,9 +1,7 @@
 import 'dart:async';
-
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-
-import '../services/flowlamp_api.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:http/http.dart' as http;
 
 class FocusTimerSection extends StatefulWidget {
   const FocusTimerSection({super.key});
@@ -13,68 +11,46 @@ class FocusTimerSection extends StatefulWidget {
 }
 
 class _FocusTimerSectionState extends State<FocusTimerSection> {
-  final FlowLampApi _api = FlowLampApi();
-
-  int initialTimeInSeconds = 0;
-  int remainingTimeInSeconds = 0;
-  bool isRunning = false;
+  int initialTimeInSeconds = 0; 
+  int remainingTimeInSeconds = 0; 
+  bool isRunning = false; 
   Timer? _timer;
+  final String rpiUrl = "http://192.168.x.x:8000"; 
 
   String get formattedTime {
-    final minutes = remainingTimeInSeconds ~/ 60;
-    final seconds = remainingTimeInSeconds % 60;
+    int minutes = remainingTimeInSeconds ~/ 60;
+    int seconds = remainingTimeInSeconds % 60;
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  double get progress {
-    if (initialTimeInSeconds == 0) return 0.0;
-    return remainingTimeInSeconds / initialTimeInSeconds;
-  }
+  double get progress => initialTimeInSeconds == 0 ? 0.0 : remainingTimeInSeconds / initialTimeInSeconds;
 
   Future<void> _sendAlertSignal() async {
-    try {
-      await _api.notifyTimerDone();
-      print('Timer done signal sent');
-    } catch (error) {
-      print('Timer done signal failed: $error');
-    }
+    try { await http.post(Uri.parse('$rpiUrl/timer/done')); } catch (e) { debugPrint("통신 에러: $e"); }
   }
 
   void startTimer() {
-    _timer?.cancel();
-    setState(() {
-      isRunning = true;
-    });
-
+    if (_timer != null) _timer!.cancel();
+    setState(() => isRunning = true);
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {
         if (remainingTimeInSeconds > 0) {
           remainingTimeInSeconds--;
-
           if (remainingTimeInSeconds == 0) {
             timer.cancel();
             isRunning = false;
             _sendAlertSignal();
             _showTimeUpDialog();
           }
-        } else {
-          timer.cancel();
-          isRunning = false;
         }
       });
     });
   }
 
-  void pauseTimer() {
-    _timer?.cancel();
-    setState(() {
-      isRunning = false;
-    });
-  }
-
   void toggleTimer() {
     if (isRunning) {
-      pauseTimer();
+      _timer?.cancel();
+      setState(() => isRunning = false);
     } else if (remainingTimeInSeconds > 0) {
       startTimer();
     } else {
@@ -82,200 +58,94 @@ class _FocusTimerSectionState extends State<FocusTimerSection> {
     }
   }
 
+  // 💡 더 세련된 알림창 디자인
   void _showTimeUpDialog() {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20.0),
-          ),
-          title: const Row(
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+        child: Container(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.alarm_on, color: Colors.amber, size: 28),
-              SizedBox(width: 10),
-              Text('시간 종료!', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Icon(Icons.check_circle_outline, color: Colors.amber, size: 64),
+              const SizedBox(height: 20),
+              const Text("집중 완료!", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              const Text("램프가 집중 시간 종료를 알립니다.", style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 30),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.amber, foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+                ),
+                child: const Text("확인"),
+              )
             ],
           ),
-          content: const Text(
-            '설정한 집중 시간이 끝났습니다.\n램프 조명 알림이 작동합니다.',
-            style: TextStyle(height: 1.5),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: const Text(
-                '확인',
-                style: TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
+        ),
+      ),
     );
   }
 
   Future<void> _selectTime(BuildContext context) async {
-    final wasRunning = isRunning;
-    if (wasRunning) pauseTimer();
-
-    var tempDuration = Duration(seconds: initialTimeInSeconds);
-
+    Duration tempDuration = Duration(seconds: initialTimeInSeconds);
     await showDialog(
       context: context,
-      builder: (BuildContext builder) {
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20.0),
-          ),
-          child: SizedBox(
-            height: 300,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 12.0,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text(
-                          '취소',
-                          style: TextStyle(color: Colors.grey, fontSize: 16),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          setState(() {
-                            if (tempDuration.inSeconds > 0) {
-                              initialTimeInSeconds = tempDuration.inSeconds;
-                              remainingTimeInSeconds = tempDuration.inSeconds;
-                            }
-                          });
-                          Navigator.pop(context);
-                        },
-                        child: const Text(
-                          '확인',
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-                Expanded(
-                  child: CupertinoTimerPicker(
-                    mode: CupertinoTimerPickerMode.hms,
-                    initialTimerDuration: tempDuration,
-                    onTimerDurationChanged: (Duration newDuration) {
-                      tempDuration = newDuration;
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    ).then((_) {
-      if (wasRunning && remainingTimeInSeconds > 0) startTimer();
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: SizedBox(height: 300, child: Column(children: [
+          Expanded(child: CupertinoTimerPicker(
+            mode: CupertinoTimerPickerMode.ms,
+            initialTimerDuration: tempDuration,
+            onTimerDurationChanged: (d) => tempDuration = d,
+          )),
+          TextButton(onPressed: () {
+            setState(() { initialTimeInSeconds = tempDuration.inSeconds; remainingTimeInSeconds = tempDuration.inSeconds; });
+            Navigator.pop(context);
+          }, child: const Text("설정 완료", style: TextStyle(fontWeight: FontWeight.bold))),
+        ])),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Column(
-      mainAxisSize: MainAxisSize.min,
       children: [
         Stack(
           alignment: Alignment.center,
-          clipBehavior: Clip.none,
           children: [
-            SizedBox(
-              width: 220,
-              height: 220,
-              child: CircularProgressIndicator(
-                value: progress,
-                strokeWidth: 12,
-                color: Colors.yellow.shade600,
-                backgroundColor: Colors.grey.shade200,
-                strokeCap: StrokeCap.round,
+            // 
+            Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: SizedBox(
+                width: 210, height: 210,
+                child: CircularProgressIndicator(value: progress, strokeWidth: 10, color: Colors.amber, backgroundColor: Colors.grey.shade200),
               ),
             ),
             GestureDetector(
               onTap: () => _selectTime(context),
-              child: Container(
-                color: Colors.transparent,
-                padding: const EdgeInsets.all(40.0),
-                child: Text(
-                  formattedTime,
-                  style: TextStyle(
-                    fontSize: 56,
-                    color: Colors.grey.shade700,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
+              child: Text(formattedTime, style: const TextStyle(fontSize: 52, fontWeight: FontWeight.bold)),
             ),
             Positioned(
-              bottom: -16,
+              bottom: 0,
               child: GestureDetector(
                 onTap: toggleTimer,
                 child: Container(
-                  width: 56,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.15),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    isRunning ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                    color: Colors.grey.shade700,
-                    size: 36,
-                  ),
+                  width: 50, height: 50,
+                  decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]),
+                  child: Icon(isRunning ? Icons.pause : Icons.play_arrow, size: 30),
                 ),
               ),
             ),
           ],
         ),
         const SizedBox(height: 40),
-        Text(
-          'FOCUS',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 1.5,
-            color: Colors.grey.shade800,
-          ),
-        ),
+        const Text("FOCUS", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
       ],
     );
   }
