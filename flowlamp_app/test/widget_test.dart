@@ -1,30 +1,97 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flowlamp_app/main.dart';
+import 'package:flowlamp_app/services/flowlamp_api.dart';
+import 'package:flowlamp_app/widgets/powerbutton.dart';
+
+class FakeFlowLampApi extends FlowLampApi {
+  FakeFlowLampApi() : super(baseUrl: 'http://fake.local');
+
+  bool isOn = false;
+  List<int> color = [255, 255, 255];
+  int brightness = 50;
+
+  @override
+  Future<Map<String, dynamic>> getStatus() async {
+    return {'is_on': isOn, 'color': color, 'brightness': brightness};
+  }
+
+  @override
+  Future<Map<String, dynamic>> setPower(bool nextValue) async {
+    isOn = nextValue;
+    return {'is_on': isOn};
+  }
+
+  @override
+  Future<Map<String, dynamic>> setColor({
+    required int red,
+    required int green,
+    required int blue,
+  }) async {
+    color = [red, green, blue];
+    return {'color': color, 'is_on': isOn};
+  }
+
+  @override
+  Future<Map<String, dynamic>> setBrightness(int value) async {
+    brightness = value;
+    return {'brightness': brightness, 'is_on': isOn};
+  }
+}
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('power button sends a power toggle request', (tester) async {
+    final api = FakeFlowLampApi();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyHomePage(title: 'Flow_Lamp', api: api),
+      ),
+    );
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(api.isOn, isFalse);
+
+    await tester.tap(find.byType(PowerButton));
+    await tester.pump();
+
+    expect(api.isOn, isTrue);
+  });
+
+  testWidgets('color slider sends a color request when drag ends', (
+    tester,
+  ) async {
+    final api = FakeFlowLampApi();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyHomePage(title: 'Flow_Lamp', api: api),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(Slider).first, const Offset(400, 0));
+    await tester.pump();
+
+    expect(api.color, isNot([255, 255, 255]));
+  });
+
+  testWidgets('brightness slider sends a brightness request when drag ends', (
+    tester,
+  ) async {
+    final api = FakeFlowLampApi();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyHomePage(title: 'Flow_Lamp', api: api),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(Slider).at(1), const Offset(300, 0));
+    await tester.pump();
+
+    expect(api.brightness, isNot(50));
   });
 }

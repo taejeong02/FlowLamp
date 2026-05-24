@@ -1,0 +1,9 @@
+colorzero==2.0
+dynamixel-sdk==4.0.5
+fastapi==0.115.12
+gpiozero==2.0.1
+numpy==2.4.6
+opencv-python==4.13.0.92
+pyserial==3.5
+setuptools==82.0.1
+uvicorn==0.34.2

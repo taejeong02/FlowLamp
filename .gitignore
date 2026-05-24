@@ -1,0 +1,60 @@
+# Python
+venv/
+.venv/
+venv311/
+.venv311/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Flutter / Dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/build/
+**/coverage/
+**/ios/Flutter/.last_build_id
+**/app.*.symbols
+**/app.*.map.json
+
+# Android / Gradle
+**/.gradle/
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+*.apk
+*.aab
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+
