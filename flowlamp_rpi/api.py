@@ -39,6 +39,13 @@ class GestureInput(BaseModel):
     gesture: str
 
 
+class MotorVectorInput(BaseModel):
+    x: float = Field(0.0, ge=-1.0, le=1.0)
+    y: float = Field(0.0, ge=-1.0, le=1.0)
+    z: float = Field(0.0, ge=-1.0, le=1.0)
+    speed: int | None = Field(None, ge=0, le=200)
+
+
 @dataclass
 class ApiState:
     led: Any
@@ -360,12 +367,61 @@ def create_app(state: ApiState) -> FastAPI:
         }
 
         if gesture in motor_gestures:
-            print("Motor feature not enabled yet")
+            vector_by_gesture = {
+                "move_x_plus": {"x": 1.0},
+                "move_x_minus": {"x": -1.0},
+                "move_y_plus": {"y": 1.0},
+                "move_y_minus": {"y": -1.0},
+                "move_z_plus": {"z": 1.0},
+                "move_z_minus": {"z": -1.0},
+                "stop": {"x": 0.0, "y": 0.0, "z": 0.0},
+            }
+            try:
+                motor_status = await _run_blocking(
+                    state.motor.move_xyz,
+                    vector_by_gesture[gesture].get("x", 0.0),
+                    vector_by_gesture[gesture].get("y", 0.0),
+                    vector_by_gesture[gesture].get("z", 0.0),
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
             return {
                 "gesture": gesture,
-                "action": "motor_feature_not_enabled",
+                "action": "motor_moved",
+                "motor": motor_status,
             }
 
         raise HTTPException(status_code=400, detail=f"Unknown gesture: {gesture}")
+
+    @app.post("/motor/xyz")
+    async def move_motor_xyz(vector: MotorVectorInput):
+        try:
+            motor_status = await _run_blocking(
+                state.motor.move_xyz,
+                vector.x,
+                vector.y,
+                vector.z,
+                vector.speed,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "status": "success",
+            "motor": motor_status,
+        }
+
+    @app.post("/motor/stop")
+    async def stop_motor():
+        try:
+            motor_status = await _run_blocking(state.motor.stop)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "status": "success",
+            "motor": motor_status,
+        }
 
     return app
