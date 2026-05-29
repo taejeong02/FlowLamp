@@ -14,7 +14,6 @@ from devices.led import LEDController
 from devices.motor import MotorController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
-from modes.test_mode import TestMode
 
 led = LEDController()
 motor = MotorController()
@@ -35,8 +34,11 @@ class LampRuntime:
         self.modes = {
             "standby": StandbyMode(self.led),
             "normal": NormalMode(self.led),
-            "test": TestMode(self.led),
         }
+        if os.getenv("FLOWLAMP_ENABLE_TEST_MODE") == "1":
+            from modes.test_mode import TestMode
+
+            self.modes["test"] = TestMode(self.led)
         self.current_mode = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._main_task: asyncio.Task | None = None
@@ -73,6 +75,11 @@ class LampRuntime:
             self._mode_changed.set()
 
     async def handle_test_input(self, trigger: str, value):
+        if "test" not in self.modes:
+            raise RuntimeError(
+                "Test mode is disabled. Set FLOWLAMP_ENABLE_TEST_MODE=1 to enable it."
+            )
+
         await self.set_mode("test")
         return self.current_mode.handle_input(trigger, value)
 
