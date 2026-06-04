@@ -15,6 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
+VALUE_LOG_PREFIX = "[FlowLamp API]"
+
+
 class BrightnessInput(BaseModel):
     value: int = Field(..., ge=0, le=100)
 
@@ -74,6 +77,15 @@ def _current_mode_name(runtime) -> str | None:
 def _color_dict(color) -> dict[str, int]:
     r, g, b = color
     return {"r": int(r), "g": int(g), "b": int(b)}
+
+
+def _color_log_value(color) -> str:
+    rgb = _color_dict(color)
+    return f"{rgb['r']},{rgb['g']},{rgb['b']}"
+
+
+def _log_value_event(message: str):
+    print(f"{VALUE_LOG_PREFIX} {message}", flush=True)
 
 
 def _motor_ready(motor) -> bool:
@@ -221,6 +233,7 @@ def _mark_person_detected(state: ApiState):
 
 def create_app(state: ApiState) -> FastAPI:
     app = FastAPI()
+    _log_value_event("value logging enabled")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -273,7 +286,17 @@ def create_app(state: ApiState) -> FastAPI:
 
     @app.post("/color")
     async def set_color(color: ColorInput):
+        before_color = _color_log_value(state.led.current_color)
         state.led.set_color(color.r, color.g, color.b)
+        after_color = _color_log_value(state.led.current_color)
+        _log_value_event(
+            "color "
+            f"requested={color.r},{color.g},{color.b} "
+            f"before={before_color} "
+            f"applied={after_color} "
+            f"brightness={state.led.brightness_percent}% "
+            f"power={state.led.is_on}"
+        )
         return {
             "status": "success",
             "color": _color_dict(state.led.current_color),
@@ -282,10 +305,19 @@ def create_app(state: ApiState) -> FastAPI:
 
     @app.post("/brightness")
     async def set_brightness(brightness: BrightnessInput):
+        before_percent = state.led.brightness_percent
         state.led.set_brightness(brightness.value)
+        after_percent = state.led.brightness_percent
+        _log_value_event(
+            "brightness "
+            f"requested={brightness.value}% "
+            f"before={before_percent}% "
+            f"applied={after_percent}% "
+            f"raw={state.led.brightness}/255"
+        )
         return {
             "status": "success",
-            "brightness": state.led.brightness_percent,
+            "brightness": after_percent,
         }
 
     @app.post("/timer/done")
@@ -351,21 +383,41 @@ def create_app(state: ApiState) -> FastAPI:
         brightness_step = 10
 
         if gesture == "brightness_up":
+            before_percent = state.led.brightness_percent
             next_value = min(100, state.led.brightness_percent + brightness_step)
             state.led.set_brightness(next_value)
+            after_percent = state.led.brightness_percent
+            _log_value_event(
+                "gesture-brightness "
+                f"gesture={gesture} "
+                f"requested={next_value}% "
+                f"before={before_percent}% "
+                f"applied={after_percent}% "
+                f"raw={state.led.brightness}/255"
+            )
             return {
                 "gesture": gesture,
                 "action": "brightness_changed",
-                "brightness": state.led.brightness_percent,
+                "brightness": after_percent,
             }
 
         if gesture == "brightness_down":
+            before_percent = state.led.brightness_percent
             next_value = max(0, state.led.brightness_percent - brightness_step)
             state.led.set_brightness(next_value)
+            after_percent = state.led.brightness_percent
+            _log_value_event(
+                "gesture-brightness "
+                f"gesture={gesture} "
+                f"requested={next_value}% "
+                f"before={before_percent}% "
+                f"applied={after_percent}% "
+                f"raw={state.led.brightness}/255"
+            )
             return {
                 "gesture": gesture,
                 "action": "brightness_changed",
-                "brightness": state.led.brightness_percent,
+                "brightness": after_percent,
             }
 
         motor_gestures = {

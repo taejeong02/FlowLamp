@@ -201,7 +201,13 @@ app = create_flowlamp_app()
 class ApiServerThread:
     def __init__(self, app, host: str, port: int):
         self.server = uvicorn.Server(
-            uvicorn.Config(app, host=host, port=port, log_level="info")
+            uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level="info",
+                access_log=False,
+            )
         )
         self.thread = threading.Thread(
             target=self.server.run,
