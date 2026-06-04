@@ -7,6 +7,7 @@ movement tests.
 """
 
 import argparse
+import os
 import select
 import sys
 import termios
@@ -17,11 +18,19 @@ from dynamixel_sdk import PacketHandler, PortHandler
 
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
+ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_GOAL_VELOCITY = 104
 
 MODE_VELOCITY_CONTROL = 1
 TORQUE_DISABLE = 0
 TORQUE_ENABLE = 1
+HARDWARE_ERROR_BITS = {
+    0: "Input Voltage",
+    2: "Overheating",
+    3: "Motor Encoder",
+    4: "Electrical Shock",
+    5: "Overload",
+}
 
 KEY_UP = "\x1b[A"
 KEY_DOWN = "\x1b[B"
@@ -32,6 +41,11 @@ ALT_KEY_DOWN = "\x1bOB"
 ALT_KEY_RIGHT = "\x1bOC"
 ALT_KEY_LEFT = "\x1bOD"
 DEFAULT_KEY_PAIRS = ("qa", "ws", "ed", "rf")
+DEFAULT_PORT = os.getenv(
+    "FLOWLAMP_DXL_PORT",
+    "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBEQDJL-if00-port0",
+)
+DEFAULT_BAUDRATE = int(os.getenv("FLOWLAMP_DXL_BAUDRATE", "57600"))
 
 
 def parse_ids(value: str) -> list[int]:
@@ -47,8 +61,8 @@ def parse_ids(value: str) -> list[int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Control Dynamixel motors with keyboard pairs.")
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial device path")
-    parser.add_argument("--baudrate", type=int, default=57600, help="Baudrate")
+    parser.add_argument("--port", default=DEFAULT_PORT, help="Serial device path")
+    parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE, help="Baudrate")
     parser.add_argument("--protocol", type=float, default=2.0, choices=(1.0, 2.0))
     parser.add_argument("--ids", type=parse_ids, default=[1, 2, 3, 4], help="Comma-separated motor IDs")
     parser.add_argument("--left-ids", type=parse_ids, default=[1, 3], help="IDs used for left turn group")
@@ -83,12 +97,51 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def check_result(packet_handler: PacketHandler, result: int, error: int, action: str) -> bool:
+def describe_hardware_error(status: int) -> str:
+    if status == 0:
+        return "none"
+    labels = [label for bit, label in HARDWARE_ERROR_BITS.items() if status & (1 << bit)]
+    if labels:
+        return f"{status} ({', '.join(labels)})"
+    return f"{status} (unknown bits)"
+
+
+def read_hardware_error_status(
+    packet_handler: PacketHandler,
+    port_handler: PortHandler,
+    dxl_id: int,
+) -> int | None:
+    status, result, error = packet_handler.read1ByteTxRx(
+        port_handler,
+        dxl_id,
+        ADDR_HARDWARE_ERROR_STATUS,
+    )
+    if result != 0 or error != 0:
+        return None
+    return status
+
+
+def check_result(
+    packet_handler: PacketHandler,
+    result: int,
+    error: int,
+    action: str,
+    port_handler: PortHandler | None = None,
+    dxl_id: int | None = None,
+) -> bool:
     if result != 0:
         print(f"{action}: {packet_handler.getTxRxResult(result)}", file=sys.stderr)
         return False
     if error != 0:
         print(f"{action}: {packet_handler.getRxPacketError(error)}", file=sys.stderr)
+        if port_handler is not None and dxl_id is not None:
+            status = read_hardware_error_status(packet_handler, port_handler, dxl_id)
+            if status is not None:
+                print(
+                    f"ID {dxl_id} Hardware Error Status: "
+                    f"{describe_hardware_error(status)}",
+                    file=sys.stderr,
+                )
         return False
     return True
 
@@ -102,7 +155,14 @@ def write_1byte(
     action: str,
 ) -> bool:
     result, error = packet_handler.write1ByteTxRx(port_handler, dxl_id, address, value)
-    return check_result(packet_handler, result, error, f"ID {dxl_id} {action}")
+    return check_result(
+        packet_handler,
+        result,
+        error,
+        f"ID {dxl_id} {action}",
+        port_handler,
+        dxl_id,
+    )
 
 
 def write_velocity(
@@ -117,7 +177,14 @@ def write_velocity(
         ADDR_GOAL_VELOCITY,
         velocity & 0xFFFFFFFF,
     )
-    return check_result(packet_handler, result, error, f"ID {dxl_id} set velocity")
+    return check_result(
+        packet_handler,
+        result,
+        error,
+        f"ID {dxl_id} set velocity",
+        port_handler,
+        dxl_id,
+    )
 
 
 def set_all_velocities(
@@ -242,11 +309,20 @@ def configure_motor(packet_handler: PacketHandler, port_handler: PortHandler, dx
     )
 
 
+def ping_motor(packet_handler: PacketHandler, port_handler: PortHandler, dxl_id: int) -> bool:
+    model_number, result, error = packet_handler.ping(port_handler, dxl_id)
+    if not check_result(packet_handler, result, error, f"ID {dxl_id} ping", port_handler, dxl_id):
+        return False
+    print(f"ID {dxl_id} found: model {model_number}")
+    return True
+
+
 def main() -> int:
     args = parse_args()
     port_handler = PortHandler(args.port)
     packet_handler = PacketHandler(args.protocol)
     stop_velocities = {dxl_id: 0 for dxl_id in args.ids}
+    configured_ids = []
     old_terminal_settings = None
 
     if not sys.stdin.isatty():
@@ -278,9 +354,18 @@ def main() -> int:
             print(f"Failed to set baudrate: {args.baudrate}", file=sys.stderr)
             return 1
 
+        print(f"Using port={args.port}, baudrate={args.baudrate}, protocol={args.protocol}")
         for dxl_id in args.ids:
+            if not ping_motor(packet_handler, port_handler, dxl_id):
+                print(
+                    f"ID {dxl_id} is not responding. Check --port, --baudrate, power, "
+                    "cables, and the motor ID before running velocity commands.",
+                    file=sys.stderr,
+                )
+                return 1
             if not configure_motor(packet_handler, port_handler, dxl_id):
                 return 1
+            configured_ids.append(dxl_id)
 
         try:
             pairs = [pair.strip().lower() for pair in args.key_pairs.split(",") if pair.strip()]
@@ -350,9 +435,14 @@ def main() -> int:
     finally:
         if old_terminal_settings is not None:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_terminal_settings)
-        set_all_velocities(packet_handler, port_handler, stop_velocities)
+        if configured_ids:
+            set_all_velocities(
+                packet_handler,
+                port_handler,
+                {dxl_id: 0 for dxl_id in configured_ids},
+            )
         if not args.keep_torque:
-            for motor_id in args.ids:
+            for motor_id in configured_ids:
                 write_1byte(
                     packet_handler,
                     port_handler,
