@@ -17,6 +17,13 @@ except ImportError:
     print("Dynamixel SDK가 감지되지 않아 모터 시뮬레이션 모드로 동작합니다.")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
 @dataclass(frozen=True)
 class DynamixelConfig:
     """Protocol 2.0 계열 Dynamixel 기본 설정입니다."""
@@ -30,14 +37,32 @@ class DynamixelConfig:
     baudrate: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_BAUDRATE", "57600")))
     protocol_version: float = 2.0
     motor_ids: tuple[int, ...] = (1, 2, 3, 4)
-    min_position: int = 0
-    max_position: int = 4095
-    default_velocity: int = 80
+    min_position: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MIN_POSITION", "0")))
+    max_position: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_POSITION", "4095")))
+    soft_limit_margin: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_SOFT_LIMIT_MARGIN", "80"))
+    )
+    default_velocity: int = 40
     axis_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_AXIS_VELOCITY", "10"))
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_AXIS_VELOCITY", "6"))
+    )
+    profile_velocity: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_PROFILE_VELOCITY", "8"))
+    )
+    profile_acceleration: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_PROFILE_ACCELERATION", "2"))
+    )
+    home_on_connect: bool = field(
+        default_factory=lambda: _env_bool("FLOWLAMP_DXL_HOME_ON_CONNECT", True)
+    )
+    home_position: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_HOME_POSITION", "2048"))
+    )
+    home_velocity: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_HOME_VELOCITY", "8"))
     )
     max_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "200"))
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "60"))
     )
     axis_deadzone: float = field(
         default_factory=lambda: float(os.getenv("FLOWLAMP_DXL_AXIS_DEADZONE", "0.05"))
@@ -50,6 +75,7 @@ class MotorController:
     ADDR_OPERATING_MODE = 11
     ADDR_TORQUE_ENABLE = 64
     ADDR_GOAL_VELOCITY = 104
+    ADDR_PROFILE_ACCELERATION = 108
     ADDR_PROFILE_VELOCITY = 112
     ADDR_GOAL_POSITION = 116
     ADDR_PRESENT_POSITION = 132
@@ -69,7 +95,11 @@ class MotorController:
         self._velocities = {
             motor_id: self.config.default_velocity for motor_id in self.config.motor_ids
         }
+        self._profile_accelerations = {
+            motor_id: self.config.profile_acceleration for motor_id in self.config.motor_ids
+        }
         self._goal_velocities = {motor_id: 0 for motor_id in self.config.motor_ids}
+        self._soft_limit_blocks = {motor_id: None for motor_id in self.config.motor_ids}
         self._operating_modes = {
             motor_id: self.MODE_POSITION_CONTROL for motor_id in self.config.motor_ids
         }
@@ -113,7 +143,10 @@ class MotorController:
                 for motor_id in self.config.motor_ids:
                     self.set_operating_mode(motor_id, self.MODE_POSITION_CONTROL, force=True)
                     self.set_profile_velocity(motor_id, self.config.default_velocity)
+                    self.set_profile_acceleration(motor_id, self.config.profile_acceleration)
                     self.enable_torque(motor_id)
+                if self.config.home_on_connect:
+                    self._move_to_startup_home()
             except RuntimeError as exc:
                 self._port_handler.closePort()
                 self.connected = False
@@ -172,6 +205,12 @@ class MotorController:
         self._write_4_bytes(motor_id, self.ADDR_PROFILE_VELOCITY, velocity)
         self._velocities[motor_id] = velocity
 
+    def set_profile_acceleration(self, motor_id: int, acceleration: int):
+        self._validate_motor_id(motor_id)
+        acceleration = max(0, int(acceleration))
+        self._write_4_bytes(motor_id, self.ADDR_PROFILE_ACCELERATION, acceleration)
+        self._profile_accelerations[motor_id] = acceleration
+
     def move_motor(self, motor_id: int, position: int, velocity: int | None = None):
         """모터 하나를 목표 위치로 이동합니다."""
         with self._lock:
@@ -204,7 +243,15 @@ class MotorController:
             self.connect()
             self._validate_motor_id(motor_id)
             velocity = self._clamp_velocity(velocity)
+            velocity = self._limit_velocity_by_position(motor_id, velocity)
+            if velocity == self._goal_velocities[motor_id]:
+                return self.motor_status(motor_id)
+
             self.set_operating_mode(motor_id, self.MODE_VELOCITY_CONTROL)
+            if self._profile_accelerations[motor_id] != self.config.profile_acceleration:
+                self.set_profile_acceleration(motor_id, self.config.profile_acceleration)
+            if self._velocities[motor_id] != self.config.profile_velocity:
+                self.set_profile_velocity(motor_id, self.config.profile_velocity)
 
             if not self._torque_enabled[motor_id]:
                 self.enable_torque(motor_id)
@@ -275,6 +322,18 @@ class MotorController:
 
         return self.move_all(poses[pose], velocity)
 
+    def _move_to_startup_home(self):
+        home_position = self._clamp_position(self.config.home_position)
+        home_velocity = max(0, int(self.config.home_velocity))
+        for motor_id in self.config.motor_ids:
+            self.set_operating_mode(motor_id, self.MODE_POSITION_CONTROL)
+            self.set_profile_velocity(motor_id, home_velocity)
+            if not self._torque_enabled[motor_id]:
+                self.enable_torque(motor_id)
+            self._write_4_bytes(motor_id, self.ADDR_GOAL_POSITION, home_position)
+            self._positions[motor_id] = home_position
+            self._goal_velocities[motor_id] = 0
+
     def read_position(self, motor_id: int):
         self.connect()
         self._validate_motor_id(motor_id)
@@ -297,7 +356,9 @@ class MotorController:
             "id": motor_id,
             "position": self._positions[motor_id],
             "velocity": self._velocities[motor_id],
+            "profile_acceleration": self._profile_accelerations[motor_id],
             "goal_velocity": self._goal_velocities[motor_id],
+            "soft_limit_block": self._soft_limit_blocks[motor_id],
             "operating_mode": self._operating_modes[motor_id],
             "torque_enabled": self._torque_enabled[motor_id],
         }
@@ -365,6 +426,25 @@ class MotorController:
     def _clamp_velocity(self, velocity: int):
         max_velocity = max(0, int(self.config.max_velocity))
         return max(-max_velocity, min(max_velocity, int(velocity)))
+
+    def _limit_velocity_by_position(self, motor_id: int, velocity: int):
+        self._soft_limit_blocks[motor_id] = None
+        if velocity == 0:
+            return 0
+
+        position = self.read_position(motor_id)
+        lower_limit = self.config.min_position + max(0, int(self.config.soft_limit_margin))
+        upper_limit = self.config.max_position - max(0, int(self.config.soft_limit_margin))
+
+        if velocity < 0 and position <= lower_limit:
+            self._soft_limit_blocks[motor_id] = "min"
+            return 0
+
+        if velocity > 0 and position >= upper_limit:
+            self._soft_limit_blocks[motor_id] = "max"
+            return 0
+
+        return velocity
 
     def _normalize_axis(self, value: float):
         value = max(-1.0, min(1.0, float(value)))
