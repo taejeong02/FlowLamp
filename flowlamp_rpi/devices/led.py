@@ -17,7 +17,7 @@ class LEDController:
     def __init__(self):
         # LED 설정 (라즈베리 파이 GPIO 18번 기준)
         self.LED_COUNT = 72      # LED 개수
-        self.LED_PIN = 18   # GPIO 핀
+        self.LED_PIN = 19   # GPIO 핀
         self.LED_BRIGHTNESS = 255  # 밝기 (0-255)
 
         self.is_on = False

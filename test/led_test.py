@@ -110,25 +110,25 @@ def main():
         print("Press Ctrl+C to stop.", flush=True)
 
         while True:
-            #print("Red", flush=True)
-            #color_wipe(spi, (255, 0, 0))
-            #sleep(0.5)
+            print("Red", flush=True)
+            color_wipe(spi, (255, 0, 0))
+            sleep(0.5)
 
-            #print("Green", flush=True)
-            #color_wipe(spi, (0, 255, 0))
-            #sleep(0.5)
+            print("Green", flush=True)
+            color_wipe(spi, (0, 255, 0))
+            sleep(0.5)
 
-            #print("Blue", flush=True)
-            #color_wipe(spi, (0, 0, 255))
-            #sleep(0.5)
+            print("Blue", flush=True)
+            color_wipe(spi, (0, 0, 255))
+            sleep(0.5)
 
             print("White", flush=True)
             fill(spi, (255, 255, 255))
             sleep(1.0)
 
-            #print("Off", flush=True)
-            #clear(spi)
-            #sleep(0.5)
+            print("Off", flush=True)
+            clear(spi)
+            sleep(0.5)
     except KeyboardInterrupt:
         print("\nStopped by user.", flush=True)
     finally:
