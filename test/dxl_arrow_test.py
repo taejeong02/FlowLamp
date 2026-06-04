@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         default=",".join(DEFAULT_KEY_PAIRS),
         help="Comma-separated forward/backward key pairs for each motor ID",
     )
-    parser.add_argument("--speed", type=int, default=10, help="Goal velocity tick value")
+    parser.add_argument("--speed", type=int, default=20, help="Goal velocity tick value")
     parser.add_argument(
         "--timeout",
         type=float,
