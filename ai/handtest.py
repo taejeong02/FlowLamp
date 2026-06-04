@@ -1,7 +1,10 @@
+import json
 import math
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import cv2
@@ -27,6 +30,8 @@ MOTOR_AXIS_CHANGE_THRESHOLD = float(os.environ.get("HAND_MOTOR_AXIS_CHANGE_THRES
 MOTOR_Z_DEAD_ZONE_RATIO = float(os.environ.get("HAND_MOTOR_Z_DEAD_ZONE_RATIO", "0.08"))
 MOTOR_Z_SENSITIVITY = float(os.environ.get("HAND_MOTOR_Z_SENSITIVITY", "3.0"))
 MOTOR_Z_INVERT = os.environ.get("HAND_MOTOR_Z_INVERT", "0") == "1"
+FLOWLAMP_API_URL = os.environ.get("FLOWLAMP_API_URL", "http://127.0.0.1:8000")
+FLOWLAMP_API_TIMEOUT = float(os.environ.get("FLOWLAMP_API_TIMEOUT", "0.25"))
 
 BRIGHTNESS_MIN = 0
 BRIGHTNESS_MAX = 100
@@ -189,6 +194,28 @@ def should_send_motor_command(current, previous, last_sent_time):
         for current_value, previous_value in zip(current, previous)
     )
 
+def send_brightness_gesture(gesture):
+    global last_api_error_time
+
+    payload = json.dumps({"gesture": gesture}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{FLOWLAMP_API_URL}/vision/gesture",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=FLOWLAMP_API_TIMEOUT) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body).get("brightness")
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        now = time.time()
+        if now - last_api_error_time >= 3:
+            print(f"FlowLamp API gesture send failed: {exc}")
+            last_api_error_time = now
+        return None
+
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
@@ -200,6 +227,7 @@ fist_rotation_history = []
 fist_rotation_reference = None
 last_motor_vector = None
 last_motor_command_time = 0.0
+last_api_error_time = 0.0
 motor_controller = MotorController() if MOTOR_ENABLED else None
 
 class PrefetchedCapture:
@@ -469,14 +497,26 @@ try:
                             ROTATION_BRIGHTNESS_STEP,
                             int((delta_angle - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
                         )
-                        BRIGHTNESS_LEVEL = min(BRIGHTNESS_MAX, BRIGHTNESS_LEVEL + delta)
+                        if BRIGHTNESS_LEVEL < BRIGHTNESS_MAX:
+                            api_brightness = send_brightness_gesture("brightness_up")
+                            if api_brightness is None:
+                                BRIGHTNESS_LEVEL = min(BRIGHTNESS_MAX, BRIGHTNESS_LEVEL + delta)
+                            else:
+                                BRIGHTNESS_LEVEL = min(BRIGHTNESS_MAX, api_brightness)
+                        fist_rotation_reference = smooth_rotation
 
                     elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
                         delta = max(
                             ROTATION_BRIGHTNESS_STEP,
                             int((abs(delta_angle) - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
                         )
-                        BRIGHTNESS_LEVEL = max(BRIGHTNESS_MIN, BRIGHTNESS_LEVEL - delta)
+                        if BRIGHTNESS_LEVEL > BRIGHTNESS_MIN:
+                            api_brightness = send_brightness_gesture("brightness_down")
+                            if api_brightness is None:
+                                BRIGHTNESS_LEVEL = max(BRIGHTNESS_MIN, BRIGHTNESS_LEVEL - delta)
+                            else:
+                                BRIGHTNESS_LEVEL = max(BRIGHTNESS_MIN, api_brightness)
+                        fist_rotation_reference = smooth_rotation
 
                 if fist_detected:
                     if fist_rotation_reference is not None:

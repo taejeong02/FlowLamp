@@ -280,11 +280,11 @@ eye_closed_start_time = None
 eye_state = "OPEN"
 
 # 목 각도 설정
-TURTLE_ENTER_THRESHOLD = 24
-TURTLE_EXIT_THRESHOLD = 18
-TURTLE_HOLD_SECONDS = 3
+TURTLE_ENTER_THRESHOLD = 14
+TURTLE_EXIT_THRESHOLD = 10
+TURTLE_HOLD_SECONDS = 1
 
-angle_history = deque(maxlen=10)
+angle_history = deque(maxlen=5)
 is_turtle_neck = False
 turtle_start_time = None
 posture_state = "GOOD"

@@ -1,8 +1,11 @@
 import os
 import asyncio
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 import uvicorn
 
@@ -14,6 +17,12 @@ from devices.led import LEDController
 from devices.motor import MotorController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+AI_SCRIPTS = {
+    "face": PROJECT_ROOT / "ai" / "facetest.py",
+    "hand": PROJECT_ROOT / "ai" / "handtest.py",
+}
 
 led = LEDController()
 motor = MotorController()
@@ -223,10 +232,80 @@ class ApiServerThread:
         self.thread.join(timeout=5)
 
 
+class VisionScriptThread:
+    def __init__(self, name: str, script_path: Path, extra_env: dict[str, str] | None = None):
+        self.name = name
+        self.script_path = script_path
+        self.extra_env = extra_env or {}
+        self.process: subprocess.Popen | None = None
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"vision-{name}",
+            daemon=True,
+        )
+        self._stopping = False
+
+    def start(self):
+        if not self.script_path.exists():
+            print(f"Vision script not found: {self.script_path}")
+            return
+
+        self.thread.start()
+
+    def stop(self):
+        self._stopping = True
+
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+        self.thread.join(timeout=5)
+
+    def _run(self):
+        env = os.environ.copy()
+        env.update(self.extra_env)
+
+        print(f"Starting vision script: {self.name} ({self.script_path})")
+        try:
+            self.process = subprocess.Popen(
+                [sys.executable, str(self.script_path)],
+                cwd=PROJECT_ROOT,
+                env=env,
+            )
+            return_code = self.process.wait()
+        except OSError as exc:
+            print(f"Vision script failed to start: {self.name}: {exc}")
+            return
+
+        if not self._stopping:
+            print(f"Vision script exited: {self.name} code={return_code}")
+
+
+def create_vision_threads(port: int):
+    if os.getenv("FLOWLAMP_ENABLE_VISION", "1") == "0":
+        return []
+
+    api_url = os.getenv("FLOWLAMP_API_URL", f"http://127.0.0.1:{port}")
+    shared_env = {"FLOWLAMP_API_URL": api_url}
+    threads = []
+
+    if os.getenv("FLOWLAMP_ENABLE_FACE_AI", "1") != "0":
+        threads.append(VisionScriptThread("face", AI_SCRIPTS["face"], shared_env))
+
+    if os.getenv("FLOWLAMP_ENABLE_HAND_AI", "1") != "0":
+        threads.append(VisionScriptThread("hand", AI_SCRIPTS["hand"], shared_env))
+
+    return threads
+
+
 def main():
     stop_event = threading.Event()
     host = os.getenv("FLOWLAMP_HOST", "0.0.0.0")
     port = int(os.getenv("FLOWLAMP_PORT", "8000"))
+    vision_threads = []
 
     motor.connect()
     runtime.start_thread()
@@ -241,9 +320,12 @@ def main():
 
     api_server = ApiServerThread(app, host, port)
     api_server.start()
+    vision_threads = create_vision_threads(port)
+    for vision_thread in vision_threads:
+        vision_thread.start()
 
     print(f"FlowLamp API server started on {host}:{port}")
-    print("Runtime, night checker, and API server are running in separate threads.")
+    print("Runtime, night checker, API server, and vision scripts are running.")
 
     try:
         while not stop_event.is_set():
@@ -252,6 +334,8 @@ def main():
         print("FlowLamp shutdown requested.")
     finally:
         stop_event.set()
+        for vision_thread in vision_threads:
+            vision_thread.stop()
         api_server.stop()
         runtime.stop_thread()
         night_thread.join(timeout=5)
