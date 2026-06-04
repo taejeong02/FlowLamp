@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:progressive_time_picker/progressive_time_picker.dart';
 
+import '../services/flowlamp_api.dart';
+
 class NightModeCard extends StatefulWidget {
   const NightModeCard({super.key});
 
@@ -11,6 +13,9 @@ class NightModeCard extends StatefulWidget {
 }
 
 class _NightModeCardState extends State<NightModeCard> {
+  final FlowLampApi _api = FlowLampApi();
+  int _scheduleRequestId = 0;
+
   bool isNightModeOn = true;
   Timer? _minuteTimer;
 
@@ -20,6 +25,7 @@ class _NightModeCardState extends State<NightModeCard> {
   @override
   void initState() {
     super.initState();
+    _loadNightSchedule();
     _minuteTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (mounted) setState(() {});
     });
@@ -29,6 +35,63 @@ class _NightModeCardState extends State<NightModeCard> {
   void dispose() {
     _minuteTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadNightSchedule() async {
+    try {
+      final schedule = await _api.getNightSchedule();
+      if (!mounted) return;
+      _applyNightSchedule(schedule);
+    } catch (error) {
+      debugPrint('FlowLamp night schedule load error: $error');
+    }
+  }
+
+  Future<void> _saveNightSchedule() async {
+    final requestId = ++_scheduleRequestId;
+    try {
+      final schedule = await _api.setNightSchedule(
+        isOn: isNightModeOn,
+        startTime: _formatTime(_startTime),
+        endTime: _formatTime(_endTime),
+      );
+      if (!mounted || requestId != _scheduleRequestId) return;
+      _applyNightSchedule(schedule);
+    } catch (error) {
+      debugPrint('FlowLamp night schedule save error: $error');
+    }
+  }
+
+  void _applyNightSchedule(Map<String, dynamic> schedule) {
+    final startTime = _parsePickedTime(schedule['start_time']);
+    final endTime = _parsePickedTime(schedule['end_time']);
+    final isOn = schedule['is_on'];
+
+    setState(() {
+      if (isOn is bool) {
+        isNightModeOn = isOn;
+      }
+      if (startTime != null) {
+        _startTime = startTime;
+      }
+      if (endTime != null) {
+        _endTime = endTime;
+      }
+    });
+  }
+
+  PickedTime? _parsePickedTime(Object? value) {
+    if (value is! String) return null;
+
+    final parts = value.split(':');
+    if (parts.length != 2) return null;
+
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+    return PickedTime(h: hour, m: minute);
   }
 
   String _formatTime(PickedTime time) {
@@ -50,7 +113,9 @@ class _NightModeCardState extends State<NightModeCard> {
 
   @override
   Widget build(BuildContext context) {
-    final Color backgroundColor = _isCurrentlyNightTime() ? const Color(0xFFFFF5E1) : Colors.white;
+    final Color backgroundColor = _isCurrentlyNightTime()
+        ? const Color(0xFFFFF5E1)
+        : Colors.white;
 
     return AnimatedContainer(
       duration: const Duration(seconds: 1),
@@ -77,10 +142,23 @@ class _NightModeCardState extends State<NightModeCard> {
                 children: [
                   Icon(Icons.dark_mode, color: Colors.grey.shade800, size: 28),
                   const SizedBox(width: 8),
-                  const Text("NIGHT MODE", style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: 1.2)),
+                  const Text(
+                    "NIGHT MODE",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
                 ],
               ),
-              Switch(value: isNightModeOn, onChanged: (v) => setState(() => isNightModeOn = v)),
+              Switch(
+                value: isNightModeOn,
+                onChanged: (v) {
+                  setState(() => isNightModeOn = v);
+                  _saveNightSchedule();
+                },
+              ),
             ],
           ),
           const SizedBox(height: 20),
@@ -94,10 +172,13 @@ class _NightModeCardState extends State<NightModeCard> {
               _startTime = start;
               _endTime = end;
             }),
-            onSelectionEnd: (start, end, res) => setState(() {
-              _startTime = start;
-              _endTime = end;
-            }),
+            onSelectionEnd: (start, end, res) {
+              setState(() {
+                _startTime = start;
+                _endTime = end;
+              });
+              _saveNightSchedule();
+            },
             decoration: TimePickerDecoration(
               baseColor: Colors.grey.shade200,
               sweepDecoration: TimePickerSweepDecoration(

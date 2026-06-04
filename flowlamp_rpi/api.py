@@ -46,6 +46,10 @@ class MotorVectorInput(BaseModel):
     speed: int | None = Field(None, ge=0, le=200)
 
 
+class MotorVelocityInput(BaseModel):
+    value: int = Field(..., ge=-200, le=200)
+
+
 @dataclass
 class ApiState:
     led: Any
@@ -284,6 +288,14 @@ def create_app(state: ApiState) -> FastAPI:
             "brightness": state.led.brightness_percent,
         }
 
+    @app.post("/timer/done")
+    async def notify_timer_done():
+        state.led.blink_alert()
+        return {
+            "status": "success",
+            "action": "timer_alert",
+        }
+
     @app.post("/night_mode/schedule")
     async def set_night_schedule(schedule_input: NightScheduleInput):
         _parse_schedule_time(schedule_input.start_time)
@@ -403,6 +415,22 @@ def create_app(state: ApiState) -> FastAPI:
                 vector.y,
                 vector.z,
                 vector.speed,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "status": "success",
+            "motor": motor_status,
+        }
+
+    @app.post("/motor/{motor_id}/velocity")
+    async def set_motor_velocity(motor_id: int, velocity: MotorVelocityInput):
+        try:
+            motor_status = await _run_blocking(
+                state.motor.set_goal_velocity,
+                motor_id,
+                velocity.value,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc

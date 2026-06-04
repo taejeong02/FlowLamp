@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class FlowLampApi {
-  static const String _defaultBaseUrl = 'http://192.168.137.236:8000';
+  static const String _defaultBaseUrl = 'http://172.20.10.6:8000';
   static const Duration _requestTimeout = Duration(seconds: 5);
 
   FlowLampApi({
@@ -29,23 +29,68 @@ class FlowLampApi {
     required int green,
     required int blue,
   }) {
-    return _postQuery('/color', {
-      'r': red.toString(),
-      'g': green.toString(),
-      'b': blue.toString(),
-    });
+    return _postJson('/color', {'r': red, 'g': green, 'b': blue});
   }
 
   Future<Map<String, dynamic>> setBrightness(int value) {
-    return _postQuery('/brightness', {'value': value.toString()});
+    return _postJson('/brightness', {'value': value});
   }
 
   Future<Map<String, dynamic>> notifyTimerDone() {
     return _postQuery('/timer/done');
   }
 
+  Future<Map<String, dynamic>> getNightSchedule() async {
+    final response = await _client
+        .get(Uri.parse('$baseUrl/night_mode/schedule'))
+        .timeout(_requestTimeout);
+    return _decodeResponse(response);
+  }
+
+  Future<Map<String, dynamic>> setNightSchedule({
+    required bool isOn,
+    required String startTime,
+    required String endTime,
+  }) {
+    return _postJson('/night_mode/schedule', {
+      'is_on': isOn,
+      'start_time': startTime,
+      'end_time': endTime,
+    });
+  }
+
   Future<Map<String, dynamic>> setNightMode(bool active) {
-    return _postQuery('/mode/night', {'active': active.toString()});
+    return getNightSchedule().then((schedule) {
+      return setNightSchedule(
+        isOn: active,
+        startTime: schedule['start_time']?.toString() ?? '23:00',
+        endTime: schedule['end_time']?.toString() ?? '06:00',
+      );
+    });
+  }
+
+  Future<Map<String, dynamic>> moveMotorXyz({
+    double x = 0,
+    double y = 0,
+    double z = 0,
+    int? speed,
+  }) {
+    final body = <String, dynamic>{'x': x, 'y': y, 'z': z};
+    if (speed != null) {
+      body['speed'] = speed;
+    }
+    return _postJson('/motor/xyz', body);
+  }
+
+  Future<Map<String, dynamic>> setMotorVelocity({
+    required int motorId,
+    required int velocity,
+  }) {
+    return _postJson('/motor/$motorId/velocity', {'value': velocity});
+  }
+
+  Future<Map<String, dynamic>> stopMotor() {
+    return _postQuery('/motor/stop');
   }
 
   Future<Map<String, dynamic>> getStatus() async {
@@ -63,6 +108,20 @@ class FlowLampApi {
       '$baseUrl$path',
     ).replace(queryParameters: queryParameters);
     final response = await _client.post(uri).timeout(_requestTimeout);
+    return _decodeResponse(response);
+  }
+
+  Future<Map<String, dynamic>> _postJson(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
+    final response = await _client
+        .post(
+          Uri.parse('$baseUrl$path'),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(_requestTimeout);
     return _decodeResponse(response);
   }
 
