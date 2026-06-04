@@ -250,6 +250,7 @@ def main():
         runtime.stop_thread()
         night_thread.join(timeout=5)
         motor.close()
+        led.close()
 
 
 if __name__ == "__main__":
