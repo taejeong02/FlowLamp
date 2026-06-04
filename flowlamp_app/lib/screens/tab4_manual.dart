@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/flowlamp_api.dart';
+
 class Tab4Manual extends StatefulWidget {
   const Tab4Manual({super.key});
 
@@ -8,7 +10,35 @@ class Tab4Manual extends StatefulWidget {
 }
 
 class _Tab4ManualState extends State<Tab4Manual> {
+  static const int _motorSpeed = 20;
+  static const Duration _motorNudgeDuration = Duration(milliseconds: 150);
+
+  final FlowLampApi _api = FlowLampApi();
+  int _motorRequestId = 0;
+
   bool postureMode = false;
+
+  Future<void> _nudgeMotor(int motorNum, int direction) async {
+    final requestId = ++_motorRequestId;
+
+    try {
+      await _api.setMotorVelocity(
+        motorId: motorNum,
+        velocity: direction * _motorSpeed,
+      );
+      await Future.delayed(_motorNudgeDuration);
+      if (requestId == _motorRequestId) {
+        await _api.stopMotor();
+      }
+    } catch (error) {
+      debugPrint('FlowLamp motor $motorNum error: $error');
+      try {
+        await _api.stopMotor();
+      } catch (stopError) {
+        debugPrint('FlowLamp motor stop error: $stopError');
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -17,9 +47,9 @@ class _Tab4ManualState extends State<Tab4Manual> {
       children: [
         // 4개의 모터 제어 패널 생성
         ...List.generate(4, (index) => _buildMotorControlPanel(index + 1)),
-        
+
         const SizedBox(height: 20),
-        
+
         // 자세 모드 스위치
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
@@ -36,7 +66,10 @@ class _Tab4ManualState extends State<Tab4Manual> {
           ),
           child: SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text("자세 모드 (카메라 연동)", style: TextStyle(fontWeight: FontWeight.bold)),
+            title: const Text(
+              "자세 모드 (카메라 연동)",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             value: postureMode,
             activeColor: Colors.amber,
             onChanged: (v) => setState(() => postureMode = v),
@@ -69,20 +102,20 @@ class _Tab4ManualState extends State<Tab4Manual> {
           IconButton(
             icon: const Icon(Icons.chevron_left_rounded, size: 32),
             color: Colors.amber.shade700,
-            onPressed: () => print("$motorNum번 모터 왼쪽"),
+            onPressed: () => _nudgeMotor(motorNum, -1),
           ),
-          
+
           // 중앙 모터 이름
           Text(
-            "$motorNum번 모터", 
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)
+            "$motorNum번 모터",
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
           ),
-          
+
           // 오른쪽 버튼
           IconButton(
             icon: const Icon(Icons.chevron_right_rounded, size: 32),
             color: Colors.amber.shade700,
-            onPressed: () => print("$motorNum번 모터 오른쪽"),
+            onPressed: () => _nudgeMotor(motorNum, 1),
           ),
         ],
       ),
