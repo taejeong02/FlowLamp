@@ -37,8 +37,11 @@ class LEDController:
         self.brightness = self.BRIGHTNESS
         self.current_color = (255, 255, 255)
         self.alert_running = False
+        self.posture_alert_running = False
 
         self._lock = threading.Lock()
+        self._posture_alert_stop = threading.Event()
+        self._posture_alert_thread: threading.Thread | None = None
         self.spi: Any | None = None
         self.simulation = True
 
@@ -192,11 +195,58 @@ class LEDController:
 
         threading.Thread(target=run_blink, name="led-alert", daemon=True).start()
 
+    def start_posture_alert(self):
+        """Blink red continuously until the posture warning is cleared."""
+        if self.posture_alert_running:
+            return
+
+        self.posture_alert_running = True
+        self._posture_alert_stop.clear()
+
+        def show_alert_color(color):
+            with self._lock:
+                self._fill(color)
+            if self.simulation:
+                print(
+                    f"[LED POSTURE ALERT] R:{color[0]} G:{color[1]} B:{color[2]}"
+                )
+
+        def run_blink():
+            while not self._posture_alert_stop.is_set():
+                show_alert_color((255, 0, 0))
+                if self._posture_alert_stop.wait(0.35):
+                    break
+                show_alert_color((0, 0, 0))
+                if self._posture_alert_stop.wait(0.35):
+                    break
+
+            self._apply_color(*self.current_color)
+            self.posture_alert_running = False
+
+        self._posture_alert_thread = threading.Thread(
+            target=run_blink,
+            name="led-posture-alert",
+            daemon=True,
+        )
+        self._posture_alert_thread.start()
+
+    def stop_posture_alert(self):
+        """Stop continuous posture blinking and restore the previous LED state."""
+        if not self.posture_alert_running:
+            return
+
+        self._posture_alert_stop.set()
+        thread = self._posture_alert_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+        self._posture_alert_thread = None
+
     def clear(self):
         with self._lock:
             self._fill((0, 0, 0))
 
     def close(self):
+        self.stop_posture_alert()
         self.clear()
         if self.spi is not None:
             self.spi.close()

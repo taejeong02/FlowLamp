@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowlamp_rpi.devices.motor import MotorController
+from ai.booktest import BookClassifier
 
 # --- 설정 ---
 BLINK_THRESHOLD = 0.20
@@ -37,15 +38,19 @@ BRIGHTNESS_MIN = 0
 BRIGHTNESS_MAX = 100
 BRIGHTNESS_LEVEL = 50
 ROTATION_BRIGHTNESS_THRESHOLD = 12
-ROTATION_BRIGHTNESS_STEP = 1
-ROTATION_BRIGHTNESS_SENSITIVITY = 8
+ROTATION_BRIGHTNESS_STEP = 10
 ROTATION_HISTORY_SIZE = 6
 ROTATION_STABLE_FRAMES = 4
 FIST_SCORE_THRESHOLD = 1.00
+FINGER_STRAIGHT_ANGLE = 150.0
+FINGER_EXTENSION_RATIO = 1.05
 CAMERA_INDEX = os.environ.get("CAMERA_INDEX", "0")
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
+BOOK_DETECTION_ENABLED = os.environ.get("BOOK_DETECTION_ENABLED", "1") != "0"
+BOOK_ACTIVATION_DELAY = float(os.environ.get("BOOK_ACTIVATION_DELAY", "0.5"))
+BOOK_INFERENCE_INTERVAL = float(os.environ.get("BOOK_INFERENCE_INTERVAL", "0.3"))
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
@@ -66,6 +71,46 @@ hands = mp_hands.Hands(
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
 
+def dist_3d(p1, p2):
+    return math.sqrt(
+        (p1.x - p2.x) ** 2
+        + (p1.y - p2.y) ** 2
+        + (p1.z - p2.z) ** 2
+    )
+
+def joint_angle_3d(p1, vertex, p2):
+    v1 = (p1.x - vertex.x, p1.y - vertex.y, p1.z - vertex.z)
+    v2 = (p2.x - vertex.x, p2.y - vertex.y, p2.z - vertex.z)
+    norm1 = math.sqrt(sum(value * value for value in v1))
+    norm2 = math.sqrt(sum(value * value for value in v2))
+
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+
+    cosine = sum(a * b for a, b in zip(v1, v2)) / (norm1 * norm2)
+    return math.degrees(math.acos(clamp(cosine)))
+
+def is_finger_extended(lm, mcp_idx, pip_idx, dip_idx, tip_idx):
+    pip_angle = joint_angle_3d(lm[mcp_idx], lm[pip_idx], lm[dip_idx])
+    dip_angle = joint_angle_3d(lm[pip_idx], lm[dip_idx], lm[tip_idx])
+    tip_distance = dist_3d(lm[0], lm[tip_idx])
+    pip_distance = dist_3d(lm[0], lm[pip_idx])
+
+    return (
+        pip_angle >= FINGER_STRAIGHT_ANGLE
+        and dip_angle >= FINGER_STRAIGHT_ANGLE
+        and tip_distance >= pip_distance * FINGER_EXTENSION_RATIO
+    )
+
+def get_finger_states(hand_landmarks):
+    lm = hand_landmarks.landmark
+    return {
+        "index": is_finger_extended(lm, 5, 6, 7, 8),
+        "middle": is_finger_extended(lm, 9, 10, 11, 12),
+        "ring": is_finger_extended(lm, 13, 14, 15, 16),
+        "pinky": is_finger_extended(lm, 17, 18, 19, 20),
+    }
+
 def get_ear(landmarks, eye_indices):
     try:
         v1 = dist(landmarks[eye_indices[1]], landmarks[eye_indices[5]])
@@ -76,28 +121,32 @@ def get_ear(landmarks, eye_indices):
         return 0.3
 
 def is_v_gesture(hand_landmarks):
-    lm = hand_landmarks.landmark
-    index_up = lm[8].y < lm[6].y
-    middle_up = lm[12].y < lm[10].y
-    ring_down = lm[16].y > lm[14].y
-    pinky_down = lm[20].y > lm[18].y
-    return index_up and middle_up and ring_down and pinky_down
+    fingers = get_finger_states(hand_landmarks)
+    return (
+        fingers["index"]
+        and fingers["middle"]
+        and not fingers["ring"]
+        and not fingers["pinky"]
+    )
 
 def is_open_palm(hand_landmarks):
+    return all(get_finger_states(hand_landmarks).values())
+
+def get_palm_center(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
-    index_up = lm[8].y < lm[6].y
-    middle_up = lm[12].y < lm[10].y
-    ring_up = lm[16].y < lm[14].y
-    pinky_up = lm[20].y < lm[18].y
-    return index_up and middle_up and ring_up and pinky_up
+    palm_indices = [0, 5, 9, 13, 17]
+    center_x = sum(lm[index].x for index in palm_indices) / len(palm_indices)
+    center_y = sum(lm[index].y for index in palm_indices) / len(palm_indices)
+    return int(center_x * frame_w), int(center_y * frame_h)
 
 def get_hand_size(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
-    x0 = lm[0].x * frame_w
-    y0 = lm[0].y * frame_h
-    x9 = lm[9].x * frame_w
-    y9 = lm[9].y * frame_h
-    return math.hypot(x9 - x0, y9 - y0)
+    scale = (frame_w + frame_h) / 2
+    palm_lengths = [
+        dist_3d(lm[0], lm[9]) * scale,
+        dist_3d(lm[5], lm[17]) * scale,
+    ]
+    return sum(palm_lengths) / len(palm_lengths)
 
 def get_fist_score(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
@@ -229,6 +278,11 @@ last_motor_vector = None
 last_motor_command_time = 0.0
 last_api_error_time = 0.0
 motor_controller = MotorController() if MOTOR_ENABLED else None
+book_classifier = None
+book_result = None
+last_book_inference_time = 0.0
+no_hand_start_time = None
+last_book_state = None
 
 class PrefetchedCapture:
     def __init__(self, cap, first_frame):
@@ -352,12 +406,16 @@ try:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         hand_result = hands.process(rgb_frame)
+        hand_detected = bool(hand_result.multi_hand_landmarks)
 
         v_detected = False
         palm_detected = False
         fist_detected = False
 
-        if hand_result.multi_hand_landmarks:
+        if hand_detected:
+            no_hand_start_time = None
+            book_result = None
+
             for hand_landmarks in hand_result.multi_hand_landmarks:
                 mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
@@ -408,8 +466,11 @@ try:
                         brightness_msg = "BRIGHTNESS HOLD"
 
                 if palm_detected:
-                    hand_x = int(lm[9].x * frame_w)
-                    hand_y = int(lm[9].y * frame_h)
+                    hand_x, hand_y = get_palm_center(
+                        hand_landmarks,
+                        frame_w,
+                        frame_h,
+                    )
 
                     error_x = hand_x - center_x
                     error_y = hand_y - center_y
@@ -493,10 +554,7 @@ try:
                     delta_angle = smooth_rotation - fist_rotation_reference
 
                     if delta_angle > ROTATION_BRIGHTNESS_THRESHOLD:
-                        delta = max(
-                            ROTATION_BRIGHTNESS_STEP,
-                            int((delta_angle - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
-                        )
+                        delta = ROTATION_BRIGHTNESS_STEP
                         if BRIGHTNESS_LEVEL < BRIGHTNESS_MAX:
                             api_brightness = send_brightness_gesture("brightness_up")
                             if api_brightness is None:
@@ -506,10 +564,7 @@ try:
                         fist_rotation_reference = smooth_rotation
 
                     elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
-                        delta = max(
-                            ROTATION_BRIGHTNESS_STEP,
-                            int((abs(delta_angle) - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
-                        )
+                        delta = ROTATION_BRIGHTNESS_STEP
                         if BRIGHTNESS_LEVEL > BRIGHTNESS_MIN:
                             api_brightness = send_brightness_gesture("brightness_down")
                             if api_brightness is None:
@@ -542,6 +597,63 @@ try:
 
                     cv2.putText(frame, f"Brightness: {BRIGHTNESS_LEVEL}%", (50, y_offset + 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
+        elif BOOK_DETECTION_ENABLED:
+            if no_hand_start_time is None:
+                no_hand_start_time = time.time()
+
+            no_hand_elapsed = time.time() - no_hand_start_time
+            if no_hand_elapsed >= BOOK_ACTIVATION_DELAY:
+                if book_classifier is None:
+                    try:
+                        book_classifier = BookClassifier()
+                    except Exception as exc:
+                        print(f"Book AI initialization failed: {exc}")
+                        BOOK_DETECTION_ENABLED = False
+
+                now = time.time()
+                if (
+                    book_classifier is not None
+                    and now - last_book_inference_time >= BOOK_INFERENCE_INTERVAL
+                ):
+                    try:
+                        book_result = book_classifier.classify(frame)
+                        last_book_inference_time = now
+                    except Exception as exc:
+                        print(f"Book AI inference failed: {exc}")
+                        BOOK_DETECTION_ENABLED = False
+                        book_result = None
+
+                    if (
+                        book_result is not None
+                        and book_result["label"] != last_book_state
+                    ):
+                        print(
+                            f"Book state: {book_result['label']}, "
+                            f"confidence: {book_result['confidence'] * 100:.1f}%"
+                        )
+                        last_book_state = book_result["label"]
+
+                if book_classifier is not None and book_result is not None:
+                    book_classifier.draw_result(frame, book_result)
+                    cv2.putText(
+                        frame,
+                        "BOOK DETECTION MODE",
+                        (20, frame_h - 20),
+                        cv2.FONT_HERSHEY_DUPLEX,
+                        0.8,
+                        (255, 255, 0),
+                        2,
+                    )
+            else:
+                cv2.putText(
+                    frame,
+                    "Waiting for hand...",
+                    (50, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (200, 200, 200),
+                    2,
+                )
 
         if not palm_detected:
             base_hand_size = 0
@@ -558,7 +670,7 @@ try:
             cv2.putText(frame, "V GESTURE!", (50, 130),
                         cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 0), 2)
 
-        if not palm_detected and not fist_detected:
+        if hand_detected and not palm_detected and not fist_detected:
             cv2.putText(frame, "Show Open Palm to Track / Fist to Control Brightness", (50, 180),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 

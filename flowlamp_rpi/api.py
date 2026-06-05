@@ -42,6 +42,10 @@ class GestureInput(BaseModel):
     gesture: str
 
 
+class PostureInput(BaseModel):
+    turtle_neck: bool
+
+
 class MotorVectorInput(BaseModel):
     x: float = Field(0.0, ge=-1.0, le=1.0)
     y: float = Field(0.0, ge=-1.0, le=1.0)
@@ -375,6 +379,21 @@ def create_app(state: ApiState) -> FastAPI:
             "person_detected": False,
             "standby_delay_seconds": delay_seconds,
             "mode": _current_mode_name(state.runtime),
+        }
+
+    @app.post("/vision/posture")
+    async def update_posture(posture: PostureInput):
+        if posture.turtle_neck:
+            state.led.start_posture_alert()
+            action = "posture_alert_started"
+        else:
+            state.led.stop_posture_alert()
+            action = "posture_alert_stopped"
+
+        return {
+            "status": "success",
+            "turtle_neck": posture.turtle_neck,
+            "action": action,
         }
 
     @app.post("/vision/gesture")
