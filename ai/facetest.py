@@ -6,6 +6,8 @@ import subprocess
 import time
 import json
 import sqlite3
+import urllib.error
+import urllib.request
 from collections import deque
 from datetime import datetime
 
@@ -15,6 +17,8 @@ CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "1280"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "720"))
 CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
+FLOWLAMP_API_URL = os.environ.get("FLOWLAMP_API_URL", "http://127.0.0.1:8000")
+FLOWLAMP_API_TIMEOUT = float(os.environ.get("FLOWLAMP_API_TIMEOUT", "0.25"))
 
 # --- 데이터베이스 초기화 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -223,6 +227,22 @@ def send_warning_signal(reason):
 
 def send_good_signal(reason):
     print(f"SIGNAL: GOOD_OFF / REASON: {reason}")
+
+def send_posture_alert(active):
+    payload = json.dumps({"turtle_neck": active}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{FLOWLAMP_API_URL}/vision/posture",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=FLOWLAMP_API_TIMEOUT):
+            return True
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        print(f"FlowLamp API posture alert failed: {exc}")
+        return False
 
 def seconds_to_hms(seconds):
     seconds = int(seconds)
@@ -477,6 +497,7 @@ while cap.isOpened():
 
             if turtle_elapsed >= TURTLE_HOLD_SECONDS and posture_state != "TURTLE_WARNING":
                 send_warning_signal("TURTLE_NECK")
+                send_posture_alert(True)
                 posture_state = "TURTLE_WARNING"
                 turtle_neck_count += 1
 
@@ -490,6 +511,7 @@ while cap.isOpened():
 
             if posture_state == "TURTLE_WARNING":
                 send_good_signal("POSTURE_GOOD")
+                send_posture_alert(False)
                 posture_signal_msg = "Posture Signal: POSTURE_GOOD"
 
             posture_state = "GOOD"
@@ -645,6 +667,9 @@ while cap.isOpened():
 # =========================
 # 종료 후 Flutter로 넘길 최종 결과
 # =========================
+if posture_state == "TURTLE_WARNING":
+    send_posture_alert(False)
+
 end_time = time.time()
 total_study_time = end_time - start_time
 pure_study_time = max(0, total_study_time - away_time - drowsy_time)

@@ -2,9 +2,13 @@ colorzero==2.0
 dynamixel-sdk==4.0.5
 fastapi==0.115.12
 gpiozero==2.0.1
-numpy==2.4.6
+mediapipe==0.10.14
+numpy==2.1.3
 opencv-python==4.13.0.92
+protobuf==4.25.8
 pyserial==3.5
 setuptools==82.0.1
 spidev>=3.7
+tensorflow==2.19.1
+tf-keras==2.19.0
 uvicorn==0.34.2
