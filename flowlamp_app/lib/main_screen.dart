@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+
 import 'screens/tab1_control.dart';
 import 'screens/tab2_routine.dart';
 import 'screens/tab3_data.dart';
+import 'screens/tab4_manual.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -12,7 +14,7 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
-  final List<String> _titles = ['램프 제어', '알람 및 루틴', '데이터'];
+  final List<String> _titles = ['램프 제어', '알람 및 루틴', '데이터', '수동 제어'];
 
   @override
   Widget build(BuildContext context) {
@@ -33,6 +35,7 @@ class _MainScreenState extends State<MainScreen> {
           LampControlTab(),
           AlarmRoutineTab(),
           Tab3Data(),
+          Tab4Manual(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -45,11 +48,9 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.lightbulb_outline),
             label: '램프 제어',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.alarm),
-            label: '알람 및 루틴',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.alarm), label: '알람 및 루틴'),
           BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: '데이터'),
+          BottomNavigationBarItem(icon: Icon(Icons.tune), label: '수동 제어'),
         ],
       ),
     );

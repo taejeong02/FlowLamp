@@ -51,11 +51,16 @@ class PostureInput(BaseModel):
     turtle_neck: bool
 
 
+class MotorVelocityInput(BaseModel):
+    velocity: int = Field(..., ge=-100, le=100)
+
+
 @dataclass
 class ApiState:
     led: Any
     runtime: Any
     night_schedule: dict[str, Any]
+    motor: Any | None = None
     night_schedule_lock: Any | None = None
     is_night_active: Any | None = None
     person_state: dict[str, Any] | None = None
@@ -349,6 +354,29 @@ def create_app(state: ApiState) -> FastAPI:
         return {
             "status": "success",
             "action": "timer_alert",
+        }
+
+    @app.post("/motors/{motor_id}/velocity")
+    async def set_motor_velocity(motor_id: int, command: MotorVelocityInput):
+        if state.motor is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Motor controller is not configured.",
+            )
+
+        try:
+            result = await _run_blocking(
+                state.motor.set_goal_velocities,
+                {motor_id: command.velocity},
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        return {
+            "status": "success",
+            "motor": result.get(motor_id),
         }
 
     @app.post("/night_mode/schedule")

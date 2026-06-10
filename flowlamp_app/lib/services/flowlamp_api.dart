@@ -42,6 +42,13 @@ class FlowLampApi {
     return _postQuery('/timer/done');
   }
 
+  Future<Map<String, dynamic>> setMotorVelocity({
+    required int motorId,
+    required int velocity,
+  }) {
+    return _postJson('/motors/$motorId/velocity', {'velocity': velocity});
+  }
+
   Future<Map<String, dynamic>> getNightSchedule() async {
     final response = await _client
         .get(Uri.parse('$baseUrl/night_mode/schedule'))
