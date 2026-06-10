@@ -89,32 +89,9 @@ class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        ...List.generate(4, (index) => _buildMotorControlPanel(index + 1)),
+        ...List.generate(2, (index) => _buildMotorControlPanel(index + 1)),
         const SizedBox(height: 20),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text(
-              '자세 모드 (카메라 연동)',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            value: postureMode,
-            activeThumbColor: Colors.amber,
-            onChanged: (value) => setState(() => postureMode = value),
-          ),
-        ),
+        
       ],
     );
   }
