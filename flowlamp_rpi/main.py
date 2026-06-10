@@ -27,6 +27,7 @@ AI_SCRIPTS = {
     "face": PROJECT_ROOT / "ai" / "facetest.py",
     "hand": PROJECT_ROOT / "ai" / "handtest.py",
 }
+PROJECT_PYTHON = PROJECT_ROOT / "venv311" / "bin" / "python"
 
 led = LEDController()
 night_schedule = {"is_on": False, "start_time": "23:00", "end_time": "06:00"}
@@ -236,10 +237,17 @@ class ApiServerThread:
 
 
 class VisionScriptThread:
-    def __init__(self, name: str, script_path: Path, extra_env: dict[str, str] | None = None):
+    def __init__(
+        self,
+        name: str,
+        script_path: Path,
+        extra_env: dict[str, str] | None = None,
+        python_executable: str | None = None,
+    ):
         self.name = name
         self.script_path = script_path
         self.extra_env = extra_env or {}
+        self.python_executable = python_executable or sys.executable
         self.process: subprocess.Popen | None = None
         self.thread = threading.Thread(
             target=self._run,
@@ -274,7 +282,7 @@ class VisionScriptThread:
         print(f"Starting vision script: {self.name} ({self.script_path})")
         try:
             self.process = subprocess.Popen(
-                [sys.executable, str(self.script_path)],
+                [self.python_executable, str(self.script_path)],
                 cwd=PROJECT_ROOT,
                 env=env,
             )
@@ -293,13 +301,31 @@ def create_vision_threads(port: int):
 
     api_url = os.getenv("FLOWLAMP_API_URL", f"http://127.0.0.1:{port}")
     shared_env = {"FLOWLAMP_API_URL": api_url}
+    vision_python = os.getenv(
+        "FLOWLAMP_VISION_PYTHON",
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else Path(sys.executable)),
+    )
     threads = []
 
     if os.getenv("FLOWLAMP_ENABLE_FACE_AI", "1") != "0":
-        threads.append(VisionScriptThread("face", AI_SCRIPTS["face"], shared_env))
+        threads.append(
+            VisionScriptThread(
+                "face",
+                AI_SCRIPTS["face"],
+                shared_env,
+                vision_python,
+            )
+        )
 
     if os.getenv("FLOWLAMP_ENABLE_HAND_AI", "1") != "0":
-        threads.append(VisionScriptThread("hand", AI_SCRIPTS["hand"], shared_env))
+        threads.append(
+            VisionScriptThread(
+                "hand",
+                AI_SCRIPTS["hand"],
+                shared_env,
+                vision_python,
+            )
+        )
 
     return threads
 
