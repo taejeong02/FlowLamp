@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/flowlamp_api.dart';
@@ -10,8 +12,19 @@ class LampControlTab extends StatefulWidget {
 }
 
 class _LampControlTabState extends State<LampControlTab> {
+  static const Duration _sliderSendInterval = Duration(milliseconds: 80);
+
   final FlowLampApi _api = FlowLampApi();
+  int _brightnessRequestId = 0;
   int _colorRequestId = 0;
+  Timer? _brightnessSendTimer;
+  Timer? _colorSendTimer;
+  int? _pendingBrightness;
+  int? _pendingRed;
+  int? _pendingGreen;
+  int? _pendingBlue;
+  int? _lastSentBrightness;
+  String? _lastSentColor;
 
   // 램프 상태 관리 변수들
   bool isOn = true;
@@ -24,6 +37,13 @@ class _LampControlTabState extends State<LampControlTab> {
   void initState() {
     super.initState();
     _loadStatus();
+  }
+
+  @override
+  void dispose() {
+    _brightnessSendTimer?.cancel();
+    _colorSendTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadStatus() async {
@@ -73,13 +93,55 @@ class _LampControlTabState extends State<LampControlTab> {
     }
   }
 
-  Future<void> _sendBrightness(double value) async {
+  void _onBrightnessChanged(double value) {
+    setState(() => brightness = value);
+    _queueBrightness(value.round());
+  }
+
+  void _onBrightnessChangeEnd(double value) {
+    _pendingBrightness = value.round();
+    _brightnessSendTimer?.cancel();
+    _brightnessSendTimer = null;
+    _flushBrightness();
+  }
+
+  void _queueBrightness(int value) {
+    if (value == _lastSentBrightness && _pendingBrightness == null) {
+      return;
+    }
+
+    _pendingBrightness = value;
+    if (_brightnessSendTimer == null) {
+      _flushBrightness();
+    }
+  }
+
+  void _flushBrightness() {
+    final value = _pendingBrightness;
+    if (value == null || value == _lastSentBrightness) {
+      _pendingBrightness = null;
+      return;
+    }
+
+    _pendingBrightness = null;
+    _lastSentBrightness = value;
+    _sendBrightness(value);
+    _brightnessSendTimer = Timer(_sliderSendInterval, () {
+      _brightnessSendTimer = null;
+      if (_pendingBrightness != null) {
+        _flushBrightness();
+      }
+    });
+  }
+
+  Future<void> _sendBrightness(int value) async {
+    final requestId = ++_brightnessRequestId;
     try {
-      final response = await _api.setBrightness(value.round());
-      if (!mounted) return;
+      final response = await _api.setBrightness(value);
+      if (!mounted || requestId != _brightnessRequestId) return;
 
       final nextBrightness = _numToDouble(response['brightness']);
-      if (nextBrightness != null) {
+      if (nextBrightness != null && brightness.round() == value) {
         setState(() => brightness = _clampDouble(nextBrightness, 0, 100));
       }
     } catch (error) {
@@ -87,18 +149,77 @@ class _LampControlTabState extends State<LampControlTab> {
     }
   }
 
-  Future<void> _sendColor() async {
+  void _onColorChanged({double? nextRed, double? nextGreen, double? nextBlue}) {
+    setState(() {
+      if (nextRed != null) red = nextRed;
+      if (nextGreen != null) green = nextGreen;
+      if (nextBlue != null) blue = nextBlue;
+    });
+    _queueColor();
+  }
+
+  void _onColorChangeEnd() {
+    _setPendingColor();
+    _colorSendTimer?.cancel();
+    _colorSendTimer = null;
+    _flushColor();
+  }
+
+  void _queueColor() {
+    _setPendingColor();
+    if (_colorSendTimer == null) {
+      _flushColor();
+    }
+  }
+
+  void _setPendingColor() {
+    _pendingRed = red.round();
+    _pendingGreen = green.round();
+    _pendingBlue = blue.round();
+  }
+
+  void _flushColor() {
+    final nextRed = _pendingRed;
+    final nextGreen = _pendingGreen;
+    final nextBlue = _pendingBlue;
+    if (nextRed == null || nextGreen == null || nextBlue == null) {
+      return;
+    }
+
+    final colorKey = '$nextRed,$nextGreen,$nextBlue';
+    _pendingRed = null;
+    _pendingGreen = null;
+    _pendingBlue = null;
+
+    if (colorKey == _lastSentColor) {
+      return;
+    }
+
+    _lastSentColor = colorKey;
+    _sendColor(nextRed, nextGreen, nextBlue);
+    _colorSendTimer = Timer(_sliderSendInterval, () {
+      _colorSendTimer = null;
+      if (_pendingRed != null) {
+        _flushColor();
+      }
+    });
+  }
+
+  Future<void> _sendColor(int sentRed, int sentGreen, int sentBlue) async {
     final requestId = ++_colorRequestId;
     try {
       final response = await _api.setColor(
-        red: red.round(),
-        green: green.round(),
-        blue: blue.round(),
+        red: sentRed,
+        green: sentGreen,
+        blue: sentBlue,
       );
       if (!mounted || requestId != _colorRequestId) return;
 
       final color = response['color'];
-      if (color is Map) {
+      if (color is Map &&
+          red.round() == sentRed &&
+          green.round() == sentGreen &&
+          blue.round() == sentBlue) {
         setState(() {
           red = _clampDouble(_numToDouble(color['r']) ?? red, 0, 255);
           green = _clampDouble(_numToDouble(color['g']) ?? green, 0, 255);
@@ -163,8 +284,8 @@ class _LampControlTabState extends State<LampControlTab> {
               value: brightness,
               max: 100,
               activeColor: Colors.amber,
-              onChanged: (v) => setState(() => brightness = v),
-              onChangeEnd: _sendBrightness,
+              onChanged: _onBrightnessChanged,
+              onChangeEnd: _onBrightnessChangeEnd,
             ),
           ),
 
@@ -177,19 +298,19 @@ class _LampControlTabState extends State<LampControlTab> {
                   "R",
                   red,
                   Colors.red,
-                  (v) => setState(() => red = v),
+                  (v) => _onColorChanged(nextRed: v),
                 ),
                 _buildRgbSlider(
                   "G",
                   green,
                   Colors.green,
-                  (v) => setState(() => green = v),
+                  (v) => _onColorChanged(nextGreen: v),
                 ),
                 _buildRgbSlider(
                   "B",
                   blue,
                   Colors.blue,
-                  (v) => setState(() => blue = v),
+                  (v) => _onColorChanged(nextBlue: v),
                 ),
               ],
             ),
@@ -266,7 +387,7 @@ class _LampControlTabState extends State<LampControlTab> {
             max: 255,
             activeColor: color,
             onChanged: onChanged,
-            onChangeEnd: (_) => _sendColor(),
+            onChangeEnd: (_) => _onColorChangeEnd(),
           ),
         ),
         SizedBox(

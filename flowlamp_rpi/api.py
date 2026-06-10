@@ -7,12 +7,17 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+try:
+    from study_records import StudyRecordRepository, StudyRecordsError
+except ImportError:
+    from .study_records import StudyRecordRepository, StudyRecordsError
 
 
 VALUE_LOG_PREFIX = "[FlowLamp API]"
@@ -68,6 +73,7 @@ class ApiState:
     person_state: dict[str, Any] | None = None
     person_state_lock: Any | None = None
     person_absence_delay_seconds: float = 7.0
+    study_records: StudyRecordRepository | None = None
 
 
 async def _run_blocking(func, *args):
@@ -256,6 +262,38 @@ def create_app(state: ApiState) -> FastAPI:
             "color": _color_dict(state.led.current_color),
             "person_detected": _person_detected(state),
             "motor_ready": _motor_ready(state.motor),
+        }
+
+    @app.get("/study-records")
+    async def get_study_records(
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ):
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date must be on or before end_date.",
+            )
+        if state.study_records is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Study records DB is not configured.",
+            )
+
+        try:
+            records = await _run_blocking(
+                state.study_records.get_records,
+                start_date,
+                end_date,
+            )
+        except StudyRecordsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "count": len(records),
+            "records": records,
         }
 
     @app.post("/mode/{mode_name}")

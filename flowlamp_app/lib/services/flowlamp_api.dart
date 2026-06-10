@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/study_record.dart';
+
 class FlowLampApi {
   static const String _defaultBaseUrl = 'http://172.20.10.6:8000';
   static const Duration _requestTimeout = Duration(seconds: 5);
@@ -98,6 +100,40 @@ class FlowLampApi {
         .get(Uri.parse('$baseUrl/status'))
         .timeout(_requestTimeout);
     return _decodeResponse(response);
+  }
+
+  Future<List<StudyRecord>> getStudyRecords({
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final uri = Uri.parse('$baseUrl/study-records').replace(
+      queryParameters: {
+        'start_date': _dateOnly(startDate),
+        'end_date': _dateOnly(endDate),
+      },
+    );
+    final response = await _client.get(uri).timeout(_requestTimeout);
+    final body = _decodeResponse(response);
+    final records = body['records'];
+
+    if (records is! List) {
+      throw const FormatException('Expected records to be a JSON array.');
+    }
+
+    return records.map((record) {
+      if (record is! Map) {
+        throw const FormatException(
+          'Expected each record to be a JSON object.',
+        );
+      }
+      return StudyRecord.fromJson(Map<String, dynamic>.from(record));
+    }).toList();
+  }
+
+  String _dateOnly(DateTime value) {
+    final month = value.month.toString().padLeft(2, '0');
+    final day = value.day.toString().padLeft(2, '0');
+    return '${value.year}-$month-$day';
   }
 
   Future<Map<String, dynamic>> _postQuery(

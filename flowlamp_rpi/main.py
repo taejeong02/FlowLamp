@@ -11,14 +11,19 @@ import uvicorn
 
 try:
     from api import ApiState, create_app
+    from study_records import StudyRecordRepository
 except ImportError:
     from .api import ApiState, create_app
+    from .study_records import StudyRecordRepository
 from devices.led import LEDController
 from devices.motor import MotorController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STUDY_DB_PATH = Path(
+    os.getenv("FLOWLAMP_STUDY_DB", str(PROJECT_ROOT / "ai" / "study_records.db"))
+)
 AI_SCRIPTS = {
     "face": PROJECT_ROOT / "ai" / "facetest.py",
     "hand": PROJECT_ROOT / "ai" / "handtest.py",
@@ -200,6 +205,7 @@ def create_flowlamp_app():
             is_night_active=is_night_schedule_active,
             person_state=person_state,
             person_state_lock=person_state_lock,
+            study_records=StudyRecordRepository(STUDY_DB_PATH),
         )
     )
 
