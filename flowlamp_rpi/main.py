@@ -31,7 +31,7 @@ AI_SCRIPTS = {
 PROJECT_PYTHON = PROJECT_ROOT / "venv311" / "bin" / "python"
 
 led = LEDController()
-motor = MotorController()
+motor = MotorController(simulate_on_error=False)
 night_schedule = {"is_on": False, "start_time": "23:00", "end_time": "06:00"}
 night_schedule_lock = threading.Lock()
 person_state = {
@@ -303,7 +303,10 @@ def create_vision_threads(port: int):
         return []
 
     api_url = os.getenv("FLOWLAMP_API_URL", f"http://127.0.0.1:{port}")
-    shared_env = {"FLOWLAMP_API_URL": api_url}
+    shared_env = {
+        "FLOWLAMP_API_URL": api_url,
+        "HAND_MOTOR_CONTROL_MODE": "api",
+    }
     vision_python = os.getenv(
         "FLOWLAMP_VISION_PYTHON",
         str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else Path(sys.executable)),
