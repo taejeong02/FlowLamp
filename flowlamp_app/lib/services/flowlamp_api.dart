@@ -71,30 +71,6 @@ class FlowLampApi {
     });
   }
 
-  Future<Map<String, dynamic>> moveMotorXyz({
-    double x = 0,
-    double y = 0,
-    double z = 0,
-    int? speed,
-  }) {
-    final body = <String, dynamic>{'x': x, 'y': y, 'z': z};
-    if (speed != null) {
-      body['speed'] = speed;
-    }
-    return _postJson('/motor/xyz', body);
-  }
-
-  Future<Map<String, dynamic>> setMotorVelocity({
-    required int motorId,
-    required int velocity,
-  }) {
-    return _postJson('/motor/$motorId/velocity', {'value': velocity});
-  }
-
-  Future<Map<String, dynamic>> stopMotor() {
-    return _postQuery('/motor/stop');
-  }
-
   Future<Map<String, dynamic>> getStatus() async {
     final response = await _client
         .get(Uri.parse('$baseUrl/status'))

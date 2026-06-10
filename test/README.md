@@ -1,4 +1,4 @@
-# Dynamixel SDK Python Starter
+# Raspberry Pi Device Tests
 
 ## Setup
 
@@ -60,55 +60,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
-
-```bash
-python3 dxl_ping.py --port /dev/ttyUSB0 --id 1
-```
-
-Scan connected IDs:
-
-```bash
-python3 dxl_scan.py --port /dev/ttyUSB0 --start 1 --end 4
-```
-
-Gently move one motor and return it to its original position:
-
-```bash
-python3 dxl_nudge.py --port /dev/ttyUSB0 --ids 1 --delta 80
-```
-
-Gently move all four motors:
-
-```bash
-python3 dxl_nudge.py --port /dev/ttyUSB0 --ids 1,2,3,4 --delta 80
-```
-
-Control four motors with the keyboard:
-
-```bash
-python3 dxl_arrow_test.py --port /dev/ttyUSB0
-```
-
-Default motor keys:
-
-```text
-ID 1: Q / A
-ID 2: W / S
-ID 3: E / D
-ID 4: R / F
-```
-
-Use `Space` to stop all motors and `x` to quit.
-
-The default speed is very slow. Hold a key to move, release it to stop.
-
-Use a slower or faster velocity:
-
-```bash
-python3 dxl_arrow_test.py --port /dev/ttyUSB0 --speed 5
-```
-
 Start a browser camera stream:
 
 ```bash
@@ -120,18 +71,3 @@ Then open:
 ```text
 http://<raspberry-pi-ip>:8080
 ```
-
-If the servo uses a different baudrate:
-
-```bash
-python3 dxl_ping.py --port /dev/ttyUSB0 --id 1 --baudrate 1000000
-```
-
-On Linux, if you get a permission error for `/dev/ttyUSB0`, add your user to the
-serial device group and reconnect:
-
-```bash
-sudo usermod -aG dialout "$USER"
-```
-
-Then log out and log back in.

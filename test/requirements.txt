@@ -1,2 +1,1 @@
-dynamixel-sdk>=3.7.31
 spidev>=3.7

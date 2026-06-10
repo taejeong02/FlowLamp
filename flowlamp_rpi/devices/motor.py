@@ -1,4 +1,4 @@
-"""Dynamixel motor device control."""
+"""Dynamixel velocity control for hand tracking."""
 from __future__ import annotations
 
 import os
@@ -14,330 +14,207 @@ except ImportError:
     PacketHandler = None
     PortHandler = None
     HAS_DYNAMIXEL_SDK = False
-    print("Dynamixel SDK가 감지되지 않아 모터 시뮬레이션 모드로 동작합니다.")
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in ("0", "false", "no", "off")
+    print("Dynamixel SDK가 없어 모터 시뮬레이션 모드로 동작합니다.")
 
 
 @dataclass(frozen=True)
 class DynamixelConfig:
-    """Protocol 2.0 계열 Dynamixel 기본 설정입니다."""
-
     port: str = field(
         default_factory=lambda: os.getenv(
             "FLOWLAMP_DXL_PORT",
             "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBEQDJL-if00-port0",
         )
     )
-    baudrate: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_BAUDRATE", "57600")))
+    baudrate: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_BAUDRATE", "57600"))
+    )
     protocol_version: float = 2.0
     motor_ids: tuple[int, ...] = (1, 2, 3, 4)
-    min_position: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MIN_POSITION", "0")))
-    max_position: int = field(default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_POSITION", "4095")))
+    min_position: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MIN_POSITION", "0"))
+    )
+    max_position: int = field(
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_POSITION", "4095"))
+    )
     soft_limit_margin: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_SOFT_LIMIT_MARGIN", "80"))
-    )
-    default_velocity: int = 40
-    axis_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_AXIS_VELOCITY", "6"))
-    )
-    profile_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_PROFILE_VELOCITY", "8"))
-    )
-    profile_acceleration: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_PROFILE_ACCELERATION", "2"))
-    )
-    home_on_connect: bool = field(
-        default_factory=lambda: _env_bool("FLOWLAMP_DXL_HOME_ON_CONNECT", True)
-    )
-    home_position: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_HOME_POSITION", "2048"))
-    )
-    home_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_HOME_VELOCITY", "8"))
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_SOFT_LIMIT_MARGIN", "160"))
     )
     max_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "60"))
-    )
-    axis_deadzone: float = field(
-        default_factory=lambda: float(os.getenv("FLOWLAMP_DXL_AXIS_DEADZONE", "0.05"))
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "5"))
     )
 
 
 class MotorController:
-    """앱이나 제스처 입력에서 호출할 수 있는 1~4번 모터 제어기입니다."""
-
     ADDR_OPERATING_MODE = 11
     ADDR_TORQUE_ENABLE = 64
+    ADDR_HARDWARE_ERROR_STATUS = 70
     ADDR_GOAL_VELOCITY = 104
-    ADDR_PROFILE_ACCELERATION = 108
-    ADDR_PROFILE_VELOCITY = 112
-    ADDR_GOAL_POSITION = 116
     ADDR_PRESENT_POSITION = 132
 
     MODE_VELOCITY_CONTROL = 1
-    MODE_POSITION_CONTROL = 3
-
     TORQUE_OFF = 0
     TORQUE_ON = 1
 
-    def __init__(self, config: DynamixelConfig | None = None, simulate_on_error: bool = True):
+    def __init__(
+        self,
+        config: DynamixelConfig | None = None,
+        simulate_on_error: bool = True,
+    ):
         self.config = config or DynamixelConfig()
         self.simulate_on_error = simulate_on_error
         self.connected = False
         self.simulation = not HAS_DYNAMIXEL_SDK
-        self._positions = {motor_id: 2048 for motor_id in self.config.motor_ids}
-        self._velocities = {
-            motor_id: self.config.default_velocity for motor_id in self.config.motor_ids
-        }
-        self._profile_accelerations = {
-            motor_id: self.config.profile_acceleration for motor_id in self.config.motor_ids
-        }
         self._goal_velocities = {motor_id: 0 for motor_id in self.config.motor_ids}
-        self._soft_limit_blocks = {motor_id: None for motor_id in self.config.motor_ids}
-        self._operating_modes = {
-            motor_id: self.MODE_POSITION_CONTROL for motor_id in self.config.motor_ids
-        }
-        self._torque_enabled = {motor_id: False for motor_id in self.config.motor_ids}
+        self._positions = {motor_id: 2048 for motor_id in self.config.motor_ids}
+        self._disabled_motors: dict[int, str] = {}
         self._port_handler = None
         self._packet_handler = None
         self._lock = threading.RLock()
 
     def connect(self):
-        """포트를 열고 토크를 켭니다. 실패 시 설정에 따라 시뮬레이션으로 전환합니다."""
+        """Connect in velocity mode with zero velocity; no startup movement."""
         if self.connected or self.simulation:
             return self.status()
 
         with self._lock:
-            if self.connected or self.simulation:
+            if self.connected:
                 return self.status()
 
             self._port_handler = PortHandler(self.config.port)
             self._packet_handler = PacketHandler(self.config.protocol_version)
-
             try:
                 port_opened = self._port_handler.openPort()
             except Exception as exc:
-                return self._handle_connection_error(f"모터 포트를 열 수 없습니다: {exc}")
-
+                return self._handle_connection_error(f"모터 포트 열기 실패: {exc}")
             if not port_opened:
-                return self._handle_connection_error(f"모터 포트를 열 수 없습니다: {self.config.port}")
+                return self._handle_connection_error(
+                    f"모터 포트를 열 수 없습니다: {self.config.port}"
+                )
 
             try:
                 baudrate_set = self._port_handler.setBaudRate(self.config.baudrate)
             except Exception as exc:
                 self._port_handler.closePort()
                 return self._handle_connection_error(f"모터 baudrate 설정 실패: {exc}")
-
             if not baudrate_set:
                 self._port_handler.closePort()
-                return self._handle_connection_error(f"모터 baudrate 설정 실패: {self.config.baudrate}")
+                return self._handle_connection_error(
+                    f"모터 baudrate 설정 실패: {self.config.baudrate}"
+                )
 
             self.connected = True
-            try:
-                for motor_id in self.config.motor_ids:
-                    self.set_operating_mode(motor_id, self.MODE_POSITION_CONTROL, force=True)
-                    self.set_profile_velocity(motor_id, self.config.default_velocity)
-                    self.set_profile_acceleration(motor_id, self.config.profile_acceleration)
-                    self.enable_torque(motor_id)
-                if self.config.home_on_connect:
-                    self._move_to_startup_home()
-            except RuntimeError as exc:
-                self._port_handler.closePort()
-                self.connected = False
-                return self._handle_connection_error(str(exc))
+            for motor_id in self.config.motor_ids:
+                try:
+                    self._write_1_byte(motor_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_OFF)
+                    self._write_1_byte(
+                        motor_id,
+                        self.ADDR_OPERATING_MODE,
+                        self.MODE_VELOCITY_CONTROL,
+                    )
+                    self._write_4_bytes(motor_id, self.ADDR_GOAL_VELOCITY, 0)
+                    self._write_1_byte(motor_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_ON)
+                except RuntimeError as exc:
+                    self._disable_motor(motor_id, str(exc))
 
             print(f"Dynamixel 연결 완료: {self.config.port} @ {self.config.baudrate}")
             return self.status()
 
+    def move_xyz(self, x: float, y: float, z: float, speed: int = 2):
+        """Map normalized hand axes to four motor velocities."""
+        speed = max(0, min(int(speed), self.config.max_velocity))
+        x = self._normalize_axis(x)
+        y = self._normalize_axis(y)
+        z = self._normalize_axis(z)
+        velocities = {
+            1: self._axis_to_velocity(x, speed),
+            2: self._axis_to_velocity(z + y, speed),
+            3: self._axis_to_velocity(-z, speed),
+            4: self._axis_to_velocity(y - z, speed),
+        }
+        return self.set_goal_velocities(velocities)
+
+    def set_goal_velocities(self, velocities: dict[int, int]):
+        with self._lock:
+            self.connect()
+            result = {}
+            for motor_id, velocity in velocities.items():
+                result[motor_id] = self._set_goal_velocity(motor_id, velocity)
+            return result
+
+    def stop(self):
+        return self.set_goal_velocities(
+            {motor_id: 0 for motor_id in self.config.motor_ids}
+        )
+
     def close(self):
-        """모터 토크를 끄고 포트를 닫습니다."""
-        if not self.connected and not self.simulation:
-            return
-
-        for motor_id in self.config.motor_ids:
-            try:
-                self.disable_torque(motor_id)
-            except RuntimeError as exc:
-                print(f"모터 토크 해제 실패: {exc}")
-
-        if self._port_handler and self.connected:
-            self._port_handler.closePort()
-
-        self.connected = False
-        print("Dynamixel 연결 종료")
-
-    def enable_torque(self, motor_id: int):
-        self._validate_motor_id(motor_id)
-        self._write_1_byte(motor_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_ON)
-        self._torque_enabled[motor_id] = True
-
-    def disable_torque(self, motor_id: int):
-        self._validate_motor_id(motor_id)
-        self._write_1_byte(motor_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_OFF)
-        self._torque_enabled[motor_id] = False
-
-    def set_operating_mode(self, motor_id: int, mode: int, force: bool = False):
-        """모터 제어 모드를 바꿉니다. X-series는 모드 변경 전 토크 OFF가 필요합니다."""
-        self._validate_motor_id(motor_id)
-        mode = int(mode)
-        if mode not in (self.MODE_VELOCITY_CONTROL, self.MODE_POSITION_CONTROL):
-            raise ValueError(f"Unsupported operating mode: {mode}")
-        if not force and self._operating_modes[motor_id] == mode:
-            return
-
-        was_torque_enabled = self._torque_enabled[motor_id]
-        if was_torque_enabled:
-            self.disable_torque(motor_id)
-        self._write_1_byte(motor_id, self.ADDR_OPERATING_MODE, mode)
-        self._operating_modes[motor_id] = mode
-        if was_torque_enabled:
-            self.enable_torque(motor_id)
-
-    def set_profile_velocity(self, motor_id: int, velocity: int):
-        self._validate_motor_id(motor_id)
-        velocity = max(0, int(velocity))
-        self._write_4_bytes(motor_id, self.ADDR_PROFILE_VELOCITY, velocity)
-        self._velocities[motor_id] = velocity
-
-    def set_profile_acceleration(self, motor_id: int, acceleration: int):
-        self._validate_motor_id(motor_id)
-        acceleration = max(0, int(acceleration))
-        self._write_4_bytes(motor_id, self.ADDR_PROFILE_ACCELERATION, acceleration)
-        self._profile_accelerations[motor_id] = acceleration
-
-    def move_motor(self, motor_id: int, position: int, velocity: int | None = None):
-        """모터 하나를 목표 위치로 이동합니다."""
         with self._lock:
-            self.connect()
-            self._validate_motor_id(motor_id)
-            self.set_operating_mode(motor_id, self.MODE_POSITION_CONTROL)
-            position = self._clamp_position(position)
+            if self.connected:
+                for motor_id in self.config.motor_ids:
+                    if motor_id in self._disabled_motors:
+                        continue
+                    try:
+                        self._write_4_bytes(motor_id, self.ADDR_GOAL_VELOCITY, 0)
+                        self._write_1_byte(
+                            motor_id,
+                            self.ADDR_TORQUE_ENABLE,
+                            self.TORQUE_OFF,
+                        )
+                    except RuntimeError:
+                        pass
+                self._port_handler.closePort()
+            self.connected = False
 
-            if velocity is not None:
-                self.set_profile_velocity(motor_id, velocity)
+    def status(self):
+        return {
+            "connected": self.connected,
+            "simulation": self.simulation,
+            "disabled_motors": dict(self._disabled_motors),
+            "motors": [
+                {
+                    "id": motor_id,
+                    "position": self._positions[motor_id],
+                    "goal_velocity": self._goal_velocities[motor_id],
+                    "disabled": motor_id in self._disabled_motors,
+                }
+                for motor_id in self.config.motor_ids
+            ],
+        }
 
-            if not self._torque_enabled[motor_id]:
-                self.enable_torque(motor_id)
+    def _set_goal_velocity(self, motor_id: int, velocity: int):
+        if motor_id not in self.config.motor_ids:
+            raise ValueError(f"Unknown motor id: {motor_id}")
+        if motor_id in self._disabled_motors:
+            return self._motor_result(motor_id)
 
-            self._write_4_bytes(motor_id, self.ADDR_GOAL_POSITION, position)
-            self._positions[motor_id] = position
-            self._goal_velocities[motor_id] = 0
-            return self.motor_status(motor_id)
-
-    def move_all(self, positions: dict[int, int], velocity: int | None = None):
-        """여러 모터를 한 번에 이동합니다. 예: {1: 2048, 2: 1800}"""
-        result = {}
-        for motor_id, position in positions.items():
-            result[motor_id] = self.move_motor(motor_id, position, velocity)
-        return result
-
-    def set_goal_velocity(self, motor_id: int, velocity: int):
-        """속도제어 모드에서 모터 하나의 목표 속도를 설정합니다."""
-        with self._lock:
-            self.connect()
-            self._validate_motor_id(motor_id)
-            velocity = self._clamp_velocity(velocity)
+        velocity = max(
+            -self.config.max_velocity,
+            min(self.config.max_velocity, int(velocity)),
+        )
+        try:
             velocity = self._limit_velocity_by_position(motor_id, velocity)
-            if velocity == self._goal_velocities[motor_id]:
-                return self.motor_status(motor_id)
-
-            self.set_operating_mode(motor_id, self.MODE_VELOCITY_CONTROL)
-            if self._profile_accelerations[motor_id] != self.config.profile_acceleration:
-                self.set_profile_acceleration(motor_id, self.config.profile_acceleration)
-            if self._velocities[motor_id] != self.config.profile_velocity:
-                self.set_profile_velocity(motor_id, self.config.profile_velocity)
-
-            if not self._torque_enabled[motor_id]:
-                self.enable_torque(motor_id)
-
             self._write_4_bytes(
                 motor_id,
                 self.ADDR_GOAL_VELOCITY,
                 velocity & 0xFFFFFFFF,
             )
             self._goal_velocities[motor_id] = velocity
-            return self.motor_status(motor_id)
+        except RuntimeError as exc:
+            self._disable_motor(motor_id, str(exc))
+        return self._motor_result(motor_id)
 
-    def set_goal_velocities(self, velocities: dict[int, int]):
-        """여러 모터의 목표 속도를 설정합니다. dxl_arrow_test.py의 구동 방식을 앱용으로 옮긴 API입니다."""
-        with self._lock:
-            result = {}
-            for motor_id, velocity in velocities.items():
-                result[motor_id] = self.set_goal_velocity(motor_id, velocity)
-            return result
+    def _limit_velocity_by_position(self, motor_id: int, velocity: int):
+        if velocity == 0:
+            return 0
 
-    def stop(self):
-        """현재 속도제어 중인 모터를 모두 정지합니다."""
-        return self.set_goal_velocities({motor_id: 0 for motor_id in self.config.motor_ids})
+        position = self._read_position(motor_id)
+        margin = max(0, self.config.soft_limit_margin)
+        if velocity < 0 and position <= self.config.min_position + margin:
+            return 0
+        if velocity > 0 and position >= self.config.max_position - margin:
+            return 0
+        return velocity
 
-    def move_xyz(
-        self,
-        x: float = 0.0,
-        y: float = 0.0,
-        z: float = 0.0,
-        speed: int | None = None,
-    ):
-        """앱/API의 x, y, z 입력을 4개 모터 속도로 변환해 이동합니다.
-
-        x: 1번 모터, 램프 하단 좌우 회전
-        z: 2/3/4번 모터 공통 상하 이동
-        y: 2/4번 모터를 반대로 움직여 기울임 보정
-        """
-        axis_speed = self.config.axis_velocity if speed is None else max(0, int(speed))
-        x = self._normalize_axis(x)
-        y = self._normalize_axis(y)
-        z = self._normalize_axis(z)
-
-        velocities = {
-            1: round(x * axis_speed),
-            2: round((z + y) * axis_speed),
-            3: round(z * axis_speed),
-            4: round((z - y) * axis_speed),
-        }
-        velocities = {
-            motor_id: self._clamp_velocity(velocity)
-            for motor_id, velocity in velocities.items()
-            if motor_id in self.config.motor_ids
-        }
-        return self.set_goal_velocities(velocities)
-
-    def apply_pose(self, pose: str, velocity: int | None = None):
-        """자주 쓰는 자세 프리셋을 적용합니다."""
-        poses = {
-            "home": {1: 2048, 2: 2048, 3: 2048, 4: 2048},
-            "up": {1: 2048, 2: 1700, 3: 1700, 4: 2048},
-            "down": {1: 2048, 2: 2400, 3: 2400, 4: 2048},
-            "left": {1: 1700, 2: 2048, 3: 2048, 4: 1700},
-            "right": {1: 2400, 2: 2048, 3: 2048, 4: 2400},
-        }
-
-        if pose not in poses:
-            raise ValueError(f"Unknown motor pose: {pose}")
-
-        return self.move_all(poses[pose], velocity)
-
-    def _move_to_startup_home(self):
-        home_position = self._clamp_position(self.config.home_position)
-        home_velocity = max(0, int(self.config.home_velocity))
-        for motor_id in self.config.motor_ids:
-            self.set_operating_mode(motor_id, self.MODE_POSITION_CONTROL)
-            self.set_profile_velocity(motor_id, home_velocity)
-            if not self._torque_enabled[motor_id]:
-                self.enable_torque(motor_id)
-            self._write_4_bytes(motor_id, self.ADDR_GOAL_POSITION, home_position)
-            self._positions[motor_id] = home_position
-            self._goal_velocities[motor_id] = 0
-
-    def read_position(self, motor_id: int):
-        self.connect()
-        self._validate_motor_id(motor_id)
-
+    def _read_position(self, motor_id: int):
         if self.simulation:
             return self._positions[motor_id]
 
@@ -350,33 +227,32 @@ class MotorController:
         self._positions[motor_id] = position
         return position
 
-    def motor_status(self, motor_id: int):
-        self._validate_motor_id(motor_id)
+    def _disable_motor(self, motor_id: int, reason: str):
+        self._disabled_motors[motor_id] = reason
+        self._goal_velocities[motor_id] = 0
+        print(f"모터 {motor_id} 비활성화: {reason}")
+
+    def _handle_connection_error(self, message: str):
+        if not self.simulate_on_error:
+            raise RuntimeError(message)
+        print(f"{message}; 시뮬레이션 모드로 전환합니다.")
+        self.connected = False
+        self.simulation = True
+        return self.status()
+
+    def _motor_result(self, motor_id: int):
         return {
             "id": motor_id,
             "position": self._positions[motor_id],
-            "velocity": self._velocities[motor_id],
-            "profile_acceleration": self._profile_accelerations[motor_id],
             "goal_velocity": self._goal_velocities[motor_id],
-            "soft_limit_block": self._soft_limit_blocks[motor_id],
-            "operating_mode": self._operating_modes[motor_id],
-            "torque_enabled": self._torque_enabled[motor_id],
-        }
-
-    def status(self):
-        return {
-            "connected": self.connected,
-            "simulation": self.simulation,
-            "port": self.config.port,
-            "baudrate": self.config.baudrate,
-            "motors": [self.motor_status(motor_id) for motor_id in self.config.motor_ids],
+            "disabled": motor_id in self._disabled_motors,
+            "error": self._disabled_motors.get(motor_id),
         }
 
     def _write_1_byte(self, motor_id: int, address: int, value: int):
         if self.simulation:
             print(f"[MOTOR SIM] id={motor_id} addr={address} value={value}")
             return
-
         comm_result, error = self._packet_handler.write1ByteTxRx(
             self._port_handler,
             motor_id,
@@ -389,7 +265,6 @@ class MotorController:
         if self.simulation:
             print(f"[MOTOR SIM] id={motor_id} addr={address} value={value}")
             return
-
         comm_result, error = self._packet_handler.write4ByteTxRx(
             self._port_handler,
             motor_id,
@@ -401,53 +276,46 @@ class MotorController:
     def _check_result(self, motor_id: int, comm_result: int, error: int):
         if comm_result != COMM_SUCCESS:
             message = self._packet_handler.getTxRxResult(comm_result)
-            raise RuntimeError(f"Dynamixel 통신 실패(id={motor_id}): {message}")
-
+            raise RuntimeError(f"통신 실패: {message}")
         if error:
             message = self._packet_handler.getRxPacketError(error)
-            raise RuntimeError(f"Dynamixel 패킷 에러(id={motor_id}): {message}")
+            hardware_status = self._read_hardware_error_status(motor_id)
+            details = self._decode_hardware_error_status(hardware_status)
+            suffix = f" ({', '.join(details)})" if details else ""
+            raise RuntimeError(
+                f"패킷 에러: {message}; status=0x{hardware_status:02X}{suffix}"
+            )
 
-    def _handle_connection_error(self, message: str):
-        if not self.simulate_on_error:
-            raise RuntimeError(message)
+    def _read_hardware_error_status(self, motor_id: int):
+        status, comm_result, _ = self._packet_handler.read1ByteTxRx(
+            self._port_handler,
+            motor_id,
+            self.ADDR_HARDWARE_ERROR_STATUS,
+        )
+        return status if comm_result == COMM_SUCCESS else 0
 
-        print(f"{message} 시뮬레이션 모드로 전환합니다.")
-        self.connected = False
-        self.simulation = True
-        return self.status()
+    @staticmethod
+    def _decode_hardware_error_status(status: int):
+        bits = (
+            (0, "input voltage"),
+            (2, "overheating"),
+            (3, "motor encoder"),
+            (4, "electrical shock"),
+            (5, "overload"),
+        )
+        return [name for bit, name in bits if status & (1 << bit)]
 
-    def _validate_motor_id(self, motor_id: int):
-        if motor_id not in self.config.motor_ids:
-            raise ValueError(f"Unknown motor id: {motor_id}")
-
-    def _clamp_position(self, position: int):
-        return max(self.config.min_position, min(self.config.max_position, int(position)))
-
-    def _clamp_velocity(self, velocity: int):
-        max_velocity = max(0, int(self.config.max_velocity))
-        return max(-max_velocity, min(max_velocity, int(velocity)))
-
-    def _limit_velocity_by_position(self, motor_id: int, velocity: int):
-        self._soft_limit_blocks[motor_id] = None
-        if velocity == 0:
-            return 0
-
-        position = self.read_position(motor_id)
-        lower_limit = self.config.min_position + max(0, int(self.config.soft_limit_margin))
-        upper_limit = self.config.max_position - max(0, int(self.config.soft_limit_margin))
-
-        if velocity < 0 and position <= lower_limit:
-            self._soft_limit_blocks[motor_id] = "min"
-            return 0
-
-        if velocity > 0 and position >= upper_limit:
-            self._soft_limit_blocks[motor_id] = "max"
-            return 0
-
-        return velocity
-
-    def _normalize_axis(self, value: float):
+    @staticmethod
+    def _normalize_axis(value: float):
         value = max(-1.0, min(1.0, float(value)))
-        if abs(value) < self.config.axis_deadzone:
-            return 0.0
-        return value
+        return 0.0 if abs(value) < 0.05 else value
+
+    @staticmethod
+    def _axis_to_velocity(value: float, speed: int):
+        if value == 0.0 or speed <= 0:
+            return 0
+
+        velocity = round(value * speed)
+        if velocity == 0:
+            return 1 if value > 0 else -1
+        return velocity

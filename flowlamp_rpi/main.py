@@ -16,7 +16,6 @@ except ImportError:
     from .api import ApiState, create_app
     from .study_records import StudyRecordRepository
 from devices.led import LEDController
-from devices.motor import MotorController
 from modes.normal_mode import NormalMode
 from modes.standby_mode import StandbyMode
 
@@ -30,7 +29,6 @@ AI_SCRIPTS = {
 }
 
 led = LEDController()
-motor = MotorController()
 night_schedule = {"is_on": False, "start_time": "23:00", "end_time": "06:00"}
 night_schedule_lock = threading.Lock()
 person_state = {
@@ -198,7 +196,6 @@ def create_flowlamp_app():
     return create_app(
         ApiState(
             led=led,
-            motor=motor,
             runtime=runtime,
             night_schedule=night_schedule,
             night_schedule_lock=night_schedule_lock,
@@ -313,7 +310,6 @@ def main():
     port = int(os.getenv("FLOWLAMP_PORT", "8000"))
     vision_threads = []
 
-    motor.connect()
     runtime.start_thread()
 
     night_thread = threading.Thread(
@@ -345,7 +341,6 @@ def main():
         api_server.stop()
         runtime.stop_thread()
         night_thread.join(timeout=5)
-        motor.close()
         led.close()
 
 
