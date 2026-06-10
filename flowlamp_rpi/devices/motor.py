@@ -1,9 +1,10 @@
-"""Dynamixel velocity control for hand tracking."""
+"""Two-axis Dynamixel velocity control for hand tracking."""
 from __future__ import annotations
 
 import os
 import threading
 from dataclasses import dataclass, field
+from glob import glob
 
 try:
     from dynamixel_sdk import COMM_SUCCESS, PacketHandler, PortHandler
@@ -17,19 +18,37 @@ except ImportError:
     print("Dynamixel SDK가 없어 모터 시뮬레이션 모드로 동작합니다.")
 
 
+def _default_port():
+    configured_port = os.getenv("FLOWLAMP_DXL_PORT")
+    if configured_port:
+        return configured_port
+
+    candidates = sorted(
+        glob("/dev/serial/by-id/*")
+        + glob("/dev/ttyUSB*")
+        + glob("/dev/ttyACM*")
+    )
+    if candidates:
+        return candidates[0]
+
+    return "/dev/ttyUSB0"
+
+
+def _env_bool(name: str, default: bool):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
 @dataclass(frozen=True)
 class DynamixelConfig:
-    port: str = field(
-        default_factory=lambda: os.getenv(
-            "FLOWLAMP_DXL_PORT",
-            "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBEQDJL-if00-port0",
-        )
-    )
+    port: str = field(default_factory=_default_port)
     baudrate: int = field(
         default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_BAUDRATE", "57600"))
     )
     protocol_version: float = 2.0
-    motor_ids: tuple[int, ...] = (1, 2, 3, 4)
+    motor_ids: tuple[int, ...] = (1, 4)
     min_position: int = field(
         default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MIN_POSITION", "0"))
     )
@@ -39,8 +58,16 @@ class DynamixelConfig:
     soft_limit_margin: int = field(
         default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_SOFT_LIMIT_MARGIN", "160"))
     )
+    enable_soft_limits: bool = field(
+        default_factory=lambda: _env_bool("FLOWLAMP_DXL_ENABLE_SOFT_LIMITS", False)
+    )
     max_velocity: int = field(
-        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "5"))
+        default_factory=lambda: int(os.getenv("FLOWLAMP_DXL_MAX_VELOCITY", "20"))
+    )
+    vertical_velocity_multiplier: float = field(
+        default_factory=lambda: float(
+            os.getenv("FLOWLAMP_DXL_VERTICAL_VELOCITY_MULTIPLIER", "2.0")
+        )
     )
 
 
@@ -103,6 +130,7 @@ class MotorController:
                 )
 
             self.connected = True
+            self._disabled_motors.clear()
             for motor_id in self.config.motor_ids:
                 try:
                     self._write_1_byte(motor_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_OFF)
@@ -116,22 +144,41 @@ class MotorController:
                 except RuntimeError as exc:
                     self._disable_motor(motor_id, str(exc))
 
+            if len(self._disabled_motors) == len(self.config.motor_ids):
+                self._port_handler.closePort()
+                self.connected = False
+                reasons = "; ".join(
+                    f"id={motor_id}: {reason}"
+                    for motor_id, reason in self._disabled_motors.items()
+                )
+                return self._handle_connection_error(
+                    f"1번과 4번 모터에 연결하지 못했습니다 ({reasons})"
+                )
+
             print(f"Dynamixel 연결 완료: {self.config.port} @ {self.config.baudrate}")
             return self.status()
 
-    def move_xyz(self, x: float, y: float, z: float, speed: int = 2):
-        """Map normalized hand axes to four motor velocities."""
+    def move_xy(self, x: float, y: float, speed: int = 2):
+        """Map horizontal movement to motor 1 and vertical movement to motor 4."""
         speed = max(0, min(int(speed), self.config.max_velocity))
+        vertical_speed = max(
+            0,
+            min(
+                self.config.max_velocity,
+                round(speed * self.config.vertical_velocity_multiplier),
+            ),
+        )
         x = self._normalize_axis(x)
         y = self._normalize_axis(y)
-        z = self._normalize_axis(z)
         velocities = {
             1: self._axis_to_velocity(x, speed),
-            2: self._axis_to_velocity(z + y, speed),
-            3: self._axis_to_velocity(-z, speed),
-            4: self._axis_to_velocity(y - z, speed),
+            4: self._axis_to_velocity(-y, vertical_speed),
         }
         return self.set_goal_velocities(velocities)
+
+    def move_xyz(self, x: float, y: float, z: float, speed: int = 2):
+        """Backward-compatible wrapper; depth movement is intentionally ignored."""
+        return self.move_xy(x, y, speed)
 
     def set_goal_velocities(self, velocities: dict[int, int]):
         with self._lock:
@@ -203,6 +250,8 @@ class MotorController:
         return self._motor_result(motor_id)
 
     def _limit_velocity_by_position(self, motor_id: int, velocity: int):
+        if not self.config.enable_soft_limits:
+            return velocity
         if velocity == 0:
             return 0
 

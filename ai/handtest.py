@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import math
 import os
 import sys
@@ -7,10 +8,21 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_PYTHON = PROJECT_ROOT / "venv311" / "bin" / "python"
+if (
+    PROJECT_PYTHON.exists()
+    and importlib.util.find_spec("dynamixel_sdk") is None
+    and Path(sys.executable).resolve() != PROJECT_PYTHON.resolve()
+):
+    os.execv(
+        str(PROJECT_PYTHON),
+        [str(PROJECT_PYTHON), *sys.argv],
+    )
+
 import cv2
 import mediapipe as mp
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -21,15 +33,14 @@ from ai.booktest import BookClassifier
 BLINK_THRESHOLD = 0.20
 DROWSY_TIME_LIMIT = 5.0
 
-DEAD_ZONE_XY = 40
-DEAD_ZONE_Z = 25
+DEAD_ZONE_XY = 30
 MOTOR_ENABLED = os.environ.get("HAND_MOTOR_ENABLED", "1") != "0"
-MOTOR_SPEED = int(os.environ.get("HAND_MOTOR_SPEED", "2"))
-MOTOR_COMMAND_INTERVAL = float(os.environ.get("HAND_MOTOR_COMMAND_INTERVAL", "0.15"))
-MOTOR_STABLE_FRAMES = int(os.environ.get("HAND_MOTOR_STABLE_FRAMES", "5"))
-MOTOR_Z_DEAD_ZONE_RATIO = float(os.environ.get("HAND_MOTOR_Z_DEAD_ZONE_RATIO", "0.08"))
-MOTOR_Z_SENSITIVITY = float(os.environ.get("HAND_MOTOR_Z_SENSITIVITY", "3.0"))
-MOTOR_Z_INVERT = os.environ.get("HAND_MOTOR_Z_INVERT", "0") == "1"
+MOTOR_SPEED = int(os.environ.get("HAND_MOTOR_SPEED", "12"))
+MOTOR_COMMAND_INTERVAL = float(os.environ.get("HAND_MOTOR_COMMAND_INTERVAL", "0.05"))
+MOTOR_STABLE_FRAMES = int(os.environ.get("HAND_MOTOR_STABLE_FRAMES", "1"))
+MOTOR_AXIS_SMOOTHING = float(os.environ.get("HAND_MOTOR_AXIS_SMOOTHING", "0.45"))
+MOTOR_AXIS_MAX_STEP = float(os.environ.get("HAND_MOTOR_AXIS_MAX_STEP", "0.35"))
+MOTOR_AXIS_STOP_EPSILON = float(os.environ.get("HAND_MOTOR_AXIS_STOP_EPSILON", "0.03"))
 FLOWLAMP_API_URL = os.environ.get("FLOWLAMP_API_URL", "http://127.0.0.1:8000")
 FLOWLAMP_API_TIMEOUT = float(os.environ.get("FLOWLAMP_API_TIMEOUT", "0.25"))
 
@@ -184,14 +195,6 @@ def get_tracking_command(error_x, error_y):
 
     return move_x, move_y
 
-def get_depth_command(error_z):
-    if error_z > DEAD_ZONE_Z:
-        return f"HEAD FORWARD {int(error_z)}px"
-    elif error_z < -DEAD_ZONE_Z:
-        return f"HEAD BACKWARD {int(abs(error_z))}px"
-    else:
-        return "STOP"
-
 def get_hand_rotation(hand_landmarks):
     lm = hand_landmarks.landmark
 
@@ -219,22 +222,34 @@ def error_to_axis(error, dead_zone, max_error):
     magnitude = (abs(error) - dead_zone) / usable_range
     return clamp(direction * magnitude)
 
-def hand_size_to_z_axis(hand_size, base_size):
-    if base_size <= 0:
-        return 0.0
+def smooth_axis(previous, target):
+    alpha = clamp(MOTOR_AXIS_SMOOTHING, 0.0, 1.0)
+    next_value = previous + (target - previous) * alpha
+    max_step = max(0.0, MOTOR_AXIS_MAX_STEP)
 
-    ratio_delta = (hand_size - base_size) / base_size
-    if abs(ratio_delta) <= MOTOR_Z_DEAD_ZONE_RATIO:
-        return 0.0
+    if max_step and abs(next_value - previous) > max_step:
+        next_value = previous + max_step * (1.0 if next_value > previous else -1.0)
 
-    direction = -1.0 if MOTOR_Z_INVERT else 1.0
-    return clamp(direction * ratio_delta * MOTOR_Z_SENSITIVITY)
+    if target == 0.0 and abs(next_value) < MOTOR_AXIS_STOP_EPSILON:
+        return 0.0
+    return clamp(next_value)
 
 def send_motor_command(command, *args, **kwargs):
     global last_motor_error_time
 
     try:
-        command(*args, **kwargs)
+        result = command(*args, **kwargs)
+        if isinstance(result, dict):
+            failed = [
+                motor
+                for motor in result.values()
+                if isinstance(motor, dict) and motor.get("disabled")
+            ]
+            if failed:
+                errors = ", ".join(
+                    f"id={motor.get('id')} {motor.get('error')}" for motor in failed
+                )
+                raise RuntimeError(f"Motor disabled after command: {errors}")
         return True
     except RuntimeError as exc:
         now = time.time()
@@ -271,7 +286,6 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 eyes_closed_start_time = 0
 drowsy_detected = False
 
-base_hand_size = 0
 fist_rotation_history = []
 fist_rotation_reference = None
 last_api_error_time = 0.0
@@ -279,7 +293,13 @@ last_motor_command_time = 0.0
 last_motor_error_time = 0.0
 motor_stable_frames = 0
 motor_tracking_active = False
-motor_controller = MotorController() if MOTOR_ENABLED else None
+smoothed_motor_x = 0.0
+smoothed_motor_y = 0.0
+motor_controller = (
+    MotorController(simulate_on_error=False)
+    if MOTOR_ENABLED
+    else None
+)
 book_classifier = None
 book_result = None
 last_book_inference_time = 0.0
@@ -479,18 +499,13 @@ try:
 
                     move_x, move_y = get_tracking_command(error_x, error_y)
 
-                    hand_size = get_hand_size(hand_landmarks, frame_w, frame_h)
-
-                    if base_hand_size == 0:
-                        base_hand_size = hand_size
-
-                    error_z = hand_size - base_hand_size
-                    move_z = get_depth_command(error_z)
-
-                    motor_x = error_to_axis(error_x, DEAD_ZONE_XY, frame_w / 2)
-                    motor_y = error_to_axis(error_y, DEAD_ZONE_XY, frame_h / 2)
-                    motor_z = hand_size_to_z_axis(hand_size, base_hand_size)
-                    motor_vector = (motor_x, motor_y, motor_z)
+                    raw_motor_x = error_to_axis(error_x, DEAD_ZONE_XY, frame_w / 2)
+                    raw_motor_y = error_to_axis(error_y, DEAD_ZONE_XY, frame_h / 2)
+                    smoothed_motor_x = smooth_axis(smoothed_motor_x, raw_motor_x)
+                    smoothed_motor_y = smooth_axis(smoothed_motor_y, raw_motor_y)
+                    motor_x = smoothed_motor_x
+                    motor_y = smoothed_motor_y
+                    motor_vector = (motor_x, motor_y)
                     motor_stable_frames += 1
 
                     if (
@@ -498,7 +513,7 @@ try:
                         and motor_stable_frames >= MOTOR_STABLE_FRAMES
                         and time.time() - last_motor_command_time >= MOTOR_COMMAND_INTERVAL
                     ):
-                        if motor_vector == (0.0, 0.0, 0.0):
+                        if motor_vector == (0.0, 0.0):
                             command_ok = (
                                 send_motor_command(motor_controller.stop)
                                 if motor_tracking_active
@@ -507,10 +522,9 @@ try:
                             motor_tracking_active = False
                         else:
                             command_ok = send_motor_command(
-                                motor_controller.move_xyz,
+                                motor_controller.move_xy,
                                 motor_x,
                                 motor_y,
-                                motor_z,
                                 MOTOR_SPEED,
                             )
                             motor_tracking_active = command_ok
@@ -542,25 +556,13 @@ try:
                     cv2.putText(frame, f"Vertical: {move_y}", (50, 375),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-                    cv2.putText(frame, f"Base Hand Size: {int(base_hand_size)}", (50, 420),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-                    cv2.putText(frame, f"Current Hand Size: {int(hand_size)}", (50, 450),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-                    cv2.putText(frame, f"Depth Error: {int(error_z)}px", (50, 480),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
-
-                    cv2.putText(frame, f"Depth: {move_z}", (50, 520),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
-
-                    cv2.putText(frame, f"Hand Rotation: {int(rotation_angle)} deg", (50, 560),
+                    cv2.putText(frame, f"Hand Rotation: {int(rotation_angle)} deg", (50, 420),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
                     cv2.putText(
                         frame,
-                        f"XYZ: {motor_x:.2f}, {motor_y:.2f}, {motor_z:.2f}",
-                        (50, 595),
+                        f"Motor 1 LR: {motor_x:.2f} / Motor 4 UD: {motor_y:.2f}",
+                        (50, 455),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.75,
                         (0, 255, 255),
@@ -673,7 +675,8 @@ try:
                 )
 
         if not palm_detected:
-            base_hand_size = 0
+            smoothed_motor_x = 0.0
+            smoothed_motor_y = 0.0
             motor_stable_frames = 0
             if motor_controller and motor_tracking_active:
                 if send_motor_command(motor_controller.stop):
