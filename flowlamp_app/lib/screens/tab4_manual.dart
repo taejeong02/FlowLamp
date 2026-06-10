@@ -14,6 +14,7 @@ class Tab4Manual extends StatefulWidget {
 }
 
 class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
+  static const List<int> _motorIds = [1, 4];
   static const int _motorSpeed = 20;
 
   Future<void> _motorCommandQueue = Future<void>.value();
@@ -89,9 +90,8 @@ class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        ...List.generate(2, (index) => _buildMotorControlPanel(index + 1)),
+        ..._motorIds.map(_buildMotorControlPanel),
         const SizedBox(height: 20),
-        
       ],
     );
   }

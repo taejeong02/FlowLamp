@@ -198,9 +198,9 @@ def create_flowlamp_app():
     return create_app(
         ApiState(
             led=led,
-            motor=motor,
             runtime=runtime,
             night_schedule=night_schedule,
+            motor=motor,
             night_schedule_lock=night_schedule_lock,
             is_night_active=is_night_schedule_active,
             person_state=person_state,
@@ -313,7 +313,6 @@ def main():
     port = int(os.getenv("FLOWLAMP_PORT", "8000"))
     vision_threads = []
 
-    motor.connect()
     runtime.start_thread()
 
     night_thread = threading.Thread(

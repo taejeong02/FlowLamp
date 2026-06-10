@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
-import tensorflow as tf
 
-MODEL_PATH = "keras_model.h5"
-LABEL_PATH = "labels.txt"
+AI_DIR = Path(__file__).resolve().parent
+MODEL_PATH = AI_DIR / "keras_model.h5"
+LABEL_PATH = AI_DIR / "labels.txt"
 IMG_SIZE = 224
 CONFIDENCE_THRESHOLD = 0.70
 
@@ -33,27 +35,108 @@ def preprocess_image(frame):
     return image
 
 
-def to_korean(label):
+def to_display_label(label):
     l = label.lower()
 
     if "open" in l:
-        return "펴진 책"
+        return "Open Book"
     elif "closed" in l:
-        return "덮힌 책"
+        return "Closed Book"
     elif "no" in l:
-        return "책 없음"
+        return "No Book"
     else:
         return label
 
 
-def main():
-    print("1. AI 모델 로딩 시작")
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("2. AI 모델 로딩 완료")
+class BookClassifier:
+    def __init__(
+        self,
+        model_path=MODEL_PATH,
+        label_path=LABEL_PATH,
+        confidence_threshold=CONFIDENCE_THRESHOLD,
+    ):
+        import tf_keras
 
-    labels = load_labels(LABEL_PATH)
-    labels = [clean_label(label) for label in labels]
-    print("3. 라벨 로딩 완료:", labels)
+        class CompatibleDepthwiseConv2D(tf_keras.layers.DepthwiseConv2D):
+            def __init__(self, *args, groups=None, **kwargs):
+                super().__init__(*args, **kwargs)
+
+        print("Book AI model loading...")
+        self.model = tf_keras.models.load_model(
+            model_path,
+            compile=False,
+            custom_objects={
+                "DepthwiseConv2D": CompatibleDepthwiseConv2D,
+            },
+        )
+        self.labels = [
+            clean_label(label)
+            for label in load_labels(label_path)
+        ]
+        self.confidence_threshold = confidence_threshold
+        print("Book AI model loaded:", self.labels)
+
+    def classify(self, frame):
+        h, w, _ = frame.shape
+        box_size = min(300, h, w)
+        x1 = w // 2 - box_size // 2
+        y1 = h // 2 - box_size // 2
+        x2 = x1 + box_size
+        y2 = y1 + box_size
+        roi = frame[y1:y2, x1:x2]
+
+        input_data = preprocess_image(roi)
+        prediction = self.model.predict(input_data, verbose=0)[0]
+        class_idx = int(np.argmax(prediction))
+        confidence = float(prediction[class_idx])
+        raw_label = self.labels[class_idx]
+        result_label = to_display_label(raw_label)
+
+        if confidence < self.confidence_threshold:
+            result_label = "Detecting..."
+
+        return {
+            "label": result_label,
+            "confidence": confidence,
+            "prediction": prediction,
+            "box": (x1, y1, x2, y2),
+        }
+
+    def draw_result(self, frame, result, origin=(20, 40)):
+        x1, y1, x2, y2 = result["box"]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+        text_x, text_y = origin
+        main_text = f"{result['label']} ({result['confidence'] * 100:.1f}%)"
+        cv2.putText(
+            frame,
+            main_text,
+            (text_x, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 255, 0),
+            2,
+        )
+
+        for index, probability in enumerate(result["prediction"]):
+            text_y += 30
+            line = (
+                f"{to_display_label(self.labels[index])}: "
+                f"{probability * 100:.1f}%"
+            )
+            cv2.putText(
+                frame,
+                line,
+                (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
+
+
+def main():
+    classifier = BookClassifier()
 
     print("4. 카메라 열기 시도")
     cap = cv2.VideoCapture(0)
@@ -78,62 +161,16 @@ def main():
 
         frame = cv2.flip(frame, 1)
 
-        h, w, _ = frame.shape
-
-        box_size = 300
-        x1 = w // 2 - box_size // 2
-        y1 = h // 2 - box_size // 2
-        x2 = x1 + box_size
-        y2 = y1 + box_size
-
-        roi = frame[y1:y2, x1:x2]
-
-        input_data = preprocess_image(roi)
-        prediction = model.predict(input_data, verbose=0)[0]
-
-        class_idx = int(np.argmax(prediction))
-        confidence = float(prediction[class_idx])
-
-        raw_label = labels[class_idx]
-        result_label = to_korean(raw_label)
-
-        if confidence < CONFIDENCE_THRESHOLD:
-            result_label = "판별 중..."
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
-
-        main_text = f"{result_label} ({confidence * 100:.1f}%)"
-        cv2.putText(
-            frame,
-            main_text,
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            (0, 255, 0),
-            2
-        )
-
-        y_text = 80
-        for i, prob in enumerate(prediction):
-            label_text = to_korean(labels[i])
-            line = f"{label_text}: {prob * 100:.1f}%"
-            cv2.putText(
-                frame,
-                line,
-                (20, y_text),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2
-            )
-            y_text += 30
-
-        cv2.imshow("ROI", roi)
+        result = classifier.classify(frame)
+        classifier.draw_result(frame, result)
         cv2.imshow("AI Book Classification", frame)
 
-        if result_label != last_state:
-            print(f"현재 상태: {result_label}, 신뢰도: {confidence * 100:.1f}%")
-            last_state = result_label
+        if result["label"] != last_state:
+            print(
+                f"현재 상태: {result['label']}, "
+                f"신뢰도: {result['confidence'] * 100:.1f}%"
+            )
+            last_state = result["label"]
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break

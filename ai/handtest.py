@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowlamp_rpi.devices.motor import MotorController
+from ai.booktest import BookClassifier
 
 # --- 설정 ---
 BLINK_THRESHOLD = 0.20
@@ -23,10 +24,9 @@ DROWSY_TIME_LIMIT = 5.0
 DEAD_ZONE_XY = 40
 DEAD_ZONE_Z = 25
 MOTOR_ENABLED = os.environ.get("HAND_MOTOR_ENABLED", "1") != "0"
-MOTOR_MAX_SPEED = int(os.environ.get("HAND_MOTOR_MAX_SPEED", "10"))
-MOTOR_SPEED = min(int(os.environ.get("HAND_MOTOR_SPEED", "8")), MOTOR_MAX_SPEED)
-MOTOR_COMMAND_INTERVAL = float(os.environ.get("HAND_MOTOR_COMMAND_INTERVAL", "0.14"))
-MOTOR_AXIS_CHANGE_THRESHOLD = float(os.environ.get("HAND_MOTOR_AXIS_CHANGE_THRESHOLD", "0.05"))
+MOTOR_SPEED = int(os.environ.get("HAND_MOTOR_SPEED", "2"))
+MOTOR_COMMAND_INTERVAL = float(os.environ.get("HAND_MOTOR_COMMAND_INTERVAL", "0.15"))
+MOTOR_STABLE_FRAMES = int(os.environ.get("HAND_MOTOR_STABLE_FRAMES", "5"))
 MOTOR_Z_DEAD_ZONE_RATIO = float(os.environ.get("HAND_MOTOR_Z_DEAD_ZONE_RATIO", "0.08"))
 MOTOR_Z_SENSITIVITY = float(os.environ.get("HAND_MOTOR_Z_SENSITIVITY", "3.0"))
 MOTOR_Z_INVERT = os.environ.get("HAND_MOTOR_Z_INVERT", "0") == "1"
@@ -37,15 +37,19 @@ BRIGHTNESS_MIN = 0
 BRIGHTNESS_MAX = 100
 BRIGHTNESS_LEVEL = 50
 ROTATION_BRIGHTNESS_THRESHOLD = 12
-ROTATION_BRIGHTNESS_STEP = 1
-ROTATION_BRIGHTNESS_SENSITIVITY = 8
+ROTATION_BRIGHTNESS_STEP = 10
 ROTATION_HISTORY_SIZE = 6
 ROTATION_STABLE_FRAMES = 4
 FIST_SCORE_THRESHOLD = 1.00
-CAMERA_INDEX = os.environ.get("CAMERA_INDEX", "0")
+FINGER_STRAIGHT_ANGLE = 150.0
+FINGER_EXTENSION_RATIO = 1.05
+CAMERA_INDEX = os.environ.get("CAMERA_INDEX", "8")
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
+BOOK_DETECTION_ENABLED = os.environ.get("BOOK_DETECTION_ENABLED", "1") != "0"
+BOOK_ACTIVATION_DELAY = float(os.environ.get("BOOK_ACTIVATION_DELAY", "0.5"))
+BOOK_INFERENCE_INTERVAL = float(os.environ.get("BOOK_INFERENCE_INTERVAL", "0.3"))
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
@@ -66,6 +70,49 @@ hands = mp_hands.Hands(
 def dist(p1, p2):
     return math.hypot(p1.x - p2.x, p1.y - p2.y)
 
+def dist_3d(p1, p2):
+    return math.sqrt(
+        (p1.x - p2.x) ** 2
+        + (p1.y - p2.y) ** 2
+        + (p1.z - p2.z) ** 2
+    )
+
+def clamp(value, min_value=-1.0, max_value=1.0):
+    return max(min_value, min(max_value, value))
+
+def joint_angle_3d(p1, vertex, p2):
+    v1 = (p1.x - vertex.x, p1.y - vertex.y, p1.z - vertex.z)
+    v2 = (p2.x - vertex.x, p2.y - vertex.y, p2.z - vertex.z)
+    norm1 = math.sqrt(sum(value * value for value in v1))
+    norm2 = math.sqrt(sum(value * value for value in v2))
+
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+
+    cosine = sum(a * b for a, b in zip(v1, v2)) / (norm1 * norm2)
+    return math.degrees(math.acos(clamp(cosine)))
+
+def is_finger_extended(lm, mcp_idx, pip_idx, dip_idx, tip_idx):
+    pip_angle = joint_angle_3d(lm[mcp_idx], lm[pip_idx], lm[dip_idx])
+    dip_angle = joint_angle_3d(lm[pip_idx], lm[dip_idx], lm[tip_idx])
+    tip_distance = dist_3d(lm[0], lm[tip_idx])
+    pip_distance = dist_3d(lm[0], lm[pip_idx])
+
+    return (
+        pip_angle >= FINGER_STRAIGHT_ANGLE
+        and dip_angle >= FINGER_STRAIGHT_ANGLE
+        and tip_distance >= pip_distance * FINGER_EXTENSION_RATIO
+    )
+
+def get_finger_states(hand_landmarks):
+    lm = hand_landmarks.landmark
+    return {
+        "index": is_finger_extended(lm, 5, 6, 7, 8),
+        "middle": is_finger_extended(lm, 9, 10, 11, 12),
+        "ring": is_finger_extended(lm, 13, 14, 15, 16),
+        "pinky": is_finger_extended(lm, 17, 18, 19, 20),
+    }
+
 def get_ear(landmarks, eye_indices):
     try:
         v1 = dist(landmarks[eye_indices[1]], landmarks[eye_indices[5]])
@@ -76,28 +123,32 @@ def get_ear(landmarks, eye_indices):
         return 0.3
 
 def is_v_gesture(hand_landmarks):
-    lm = hand_landmarks.landmark
-    index_up = lm[8].y < lm[6].y
-    middle_up = lm[12].y < lm[10].y
-    ring_down = lm[16].y > lm[14].y
-    pinky_down = lm[20].y > lm[18].y
-    return index_up and middle_up and ring_down and pinky_down
+    fingers = get_finger_states(hand_landmarks)
+    return (
+        fingers["index"]
+        and fingers["middle"]
+        and not fingers["ring"]
+        and not fingers["pinky"]
+    )
 
 def is_open_palm(hand_landmarks):
+    return all(get_finger_states(hand_landmarks).values())
+
+def get_palm_center(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
-    index_up = lm[8].y < lm[6].y
-    middle_up = lm[12].y < lm[10].y
-    ring_up = lm[16].y < lm[14].y
-    pinky_up = lm[20].y < lm[18].y
-    return index_up and middle_up and ring_up and pinky_up
+    palm_indices = [0, 5, 9, 13, 17]
+    center_x = sum(lm[index].x for index in palm_indices) / len(palm_indices)
+    center_y = sum(lm[index].y for index in palm_indices) / len(palm_indices)
+    return int(center_x * frame_w), int(center_y * frame_h)
 
 def get_hand_size(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
-    x0 = lm[0].x * frame_w
-    y0 = lm[0].y * frame_h
-    x9 = lm[9].x * frame_w
-    y9 = lm[9].y * frame_h
-    return math.hypot(x9 - x0, y9 - y0)
+    scale = (frame_w + frame_h) / 2
+    palm_lengths = [
+        dist_3d(lm[0], lm[9]) * scale,
+        dist_3d(lm[5], lm[17]) * scale,
+    ]
+    return sum(palm_lengths) / len(palm_lengths)
 
 def get_fist_score(hand_landmarks, frame_w, frame_h):
     lm = hand_landmarks.landmark
@@ -159,9 +210,6 @@ def get_hand_rotation(hand_landmarks):
 
     return angle
 
-def clamp(value, min_value=-1.0, max_value=1.0):
-    return max(min_value, min(max_value, value))
-
 def error_to_axis(error, dead_zone, max_error):
     if abs(error) <= dead_zone:
         return 0.0
@@ -182,17 +230,18 @@ def hand_size_to_z_axis(hand_size, base_size):
     direction = -1.0 if MOTOR_Z_INVERT else 1.0
     return clamp(direction * ratio_delta * MOTOR_Z_SENSITIVITY)
 
-def should_send_motor_command(current, previous, last_sent_time):
-    if previous is None:
+def send_motor_command(command, *args, **kwargs):
+    global last_motor_error_time
+
+    try:
+        command(*args, **kwargs)
         return True
-
-    if time.time() - last_sent_time < MOTOR_COMMAND_INTERVAL:
+    except RuntimeError as exc:
+        now = time.time()
+        if now - last_motor_error_time >= 1:
+            print(f"Motor command failed: {exc}")
+            last_motor_error_time = now
         return False
-
-    return any(
-        abs(current_value - previous_value) >= MOTOR_AXIS_CHANGE_THRESHOLD
-        for current_value, previous_value in zip(current, previous)
-    )
 
 def send_brightness_gesture(gesture):
     global last_api_error_time
@@ -225,10 +274,17 @@ drowsy_detected = False
 base_hand_size = 0
 fist_rotation_history = []
 fist_rotation_reference = None
-last_motor_vector = None
-last_motor_command_time = 0.0
 last_api_error_time = 0.0
+last_motor_command_time = 0.0
+last_motor_error_time = 0.0
+motor_stable_frames = 0
+motor_tracking_active = False
 motor_controller = MotorController() if MOTOR_ENABLED else None
+book_classifier = None
+book_result = None
+last_book_inference_time = 0.0
+no_hand_start_time = None
+last_book_state = None
 
 class PrefetchedCapture:
     def __init__(self, cap, first_frame):
@@ -352,12 +408,16 @@ try:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         hand_result = hands.process(rgb_frame)
+        hand_detected = bool(hand_result.multi_hand_landmarks)
 
         v_detected = False
         palm_detected = False
         fist_detected = False
 
-        if hand_result.multi_hand_landmarks:
+        if hand_detected:
+            no_hand_start_time = None
+            book_result = None
+
             for hand_landmarks in hand_result.multi_hand_landmarks:
                 mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
@@ -408,8 +468,11 @@ try:
                         brightness_msg = "BRIGHTNESS HOLD"
 
                 if palm_detected:
-                    hand_x = int(lm[9].x * frame_w)
-                    hand_y = int(lm[9].y * frame_h)
+                    hand_x, hand_y = get_palm_center(
+                        hand_landmarks,
+                        frame_w,
+                        frame_h,
+                    )
 
                     error_x = hand_x - center_x
                     error_y = hand_y - center_y
@@ -425,24 +488,35 @@ try:
                     move_z = get_depth_command(error_z)
 
                     motor_x = error_to_axis(error_x, DEAD_ZONE_XY, frame_w / 2)
-                    motor_y = -error_to_axis(-error_y, DEAD_ZONE_XY, frame_h / 2)
+                    motor_y = error_to_axis(error_y, DEAD_ZONE_XY, frame_h / 2)
                     motor_z = hand_size_to_z_axis(hand_size, base_hand_size)
                     motor_vector = (motor_x, motor_y, motor_z)
-                    motor_3_velocity = round(motor_z * MOTOR_SPEED)
+                    motor_stable_frames += 1
 
-                    if motor_controller and should_send_motor_command(
-                        motor_vector,
-                        last_motor_vector,
-                        last_motor_command_time,
+                    if (
+                        motor_controller
+                        and motor_stable_frames >= MOTOR_STABLE_FRAMES
+                        and time.time() - last_motor_command_time >= MOTOR_COMMAND_INTERVAL
                     ):
-                        motor_controller.move_xyz(
-                            x=motor_x,
-                            y=motor_y,
-                            z=motor_z,
-                            speed=MOTOR_SPEED,
-                        )
-                        last_motor_vector = motor_vector
-                        last_motor_command_time = time.time()
+                        if motor_vector == (0.0, 0.0, 0.0):
+                            command_ok = (
+                                send_motor_command(motor_controller.stop)
+                                if motor_tracking_active
+                                else True
+                            )
+                            motor_tracking_active = False
+                        else:
+                            command_ok = send_motor_command(
+                                motor_controller.move_xyz,
+                                motor_x,
+                                motor_y,
+                                motor_z,
+                                MOTOR_SPEED,
+                            )
+                            motor_tracking_active = command_ok
+
+                        if command_ok:
+                            last_motor_command_time = time.time()
 
                     cv2.circle(frame, (hand_x, hand_y), 10, (255, 0, 0), -1)
                     cv2.line(frame, (center_x, center_y), (hand_x, hand_y), (255, 255, 0), 2)
@@ -462,10 +536,10 @@ try:
                     cv2.putText(frame, f"Error Y: {error_y}px", (50, 300),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                    cv2.putText(frame, f"Motor X: {move_x}", (50, 340),
+                    cv2.putText(frame, f"Horizontal: {move_x}", (50, 340),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-                    cv2.putText(frame, f"Motor Y: {move_y}", (50, 375),
+                    cv2.putText(frame, f"Vertical: {move_y}", (50, 375),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
                     cv2.putText(frame, f"Base Hand Size: {int(base_hand_size)}", (50, 420),
@@ -477,26 +551,27 @@ try:
                     cv2.putText(frame, f"Depth Error: {int(error_z)}px", (50, 480),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                    cv2.putText(frame, f"Motor Z: {move_z}", (50, 520),
+                    cv2.putText(frame, f"Depth: {move_z}", (50, 520),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
 
                     cv2.putText(frame, f"Hand Rotation: {int(rotation_angle)} deg", (50, 560),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-                    cv2.putText(frame, f"XYZ: {motor_x:.2f}, {motor_y:.2f}, {motor_z:.2f}", (50, 595),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
-
-                    cv2.putText(frame, f"Motor 3 velocity: {motor_3_velocity}", (50, 630),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+                    cv2.putText(
+                        frame,
+                        f"XYZ: {motor_x:.2f}, {motor_y:.2f}, {motor_z:.2f}",
+                        (50, 595),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75,
+                        (0, 255, 255),
+                        2,
+                    )
 
                 if fist_detected and fist_rotation_reference is not None and len(fist_rotation_history) >= ROTATION_STABLE_FRAMES:
                     delta_angle = smooth_rotation - fist_rotation_reference
 
                     if delta_angle > ROTATION_BRIGHTNESS_THRESHOLD:
-                        delta = max(
-                            ROTATION_BRIGHTNESS_STEP,
-                            int((delta_angle - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
-                        )
+                        delta = ROTATION_BRIGHTNESS_STEP
                         if BRIGHTNESS_LEVEL < BRIGHTNESS_MAX:
                             api_brightness = send_brightness_gesture("brightness_up")
                             if api_brightness is None:
@@ -506,10 +581,7 @@ try:
                         fist_rotation_reference = smooth_rotation
 
                     elif delta_angle < -ROTATION_BRIGHTNESS_THRESHOLD:
-                        delta = max(
-                            ROTATION_BRIGHTNESS_STEP,
-                            int((abs(delta_angle) - ROTATION_BRIGHTNESS_THRESHOLD) / ROTATION_BRIGHTNESS_SENSITIVITY)
-                        )
+                        delta = ROTATION_BRIGHTNESS_STEP
                         if BRIGHTNESS_LEVEL > BRIGHTNESS_MIN:
                             api_brightness = send_brightness_gesture("brightness_down")
                             if api_brightness is None:
@@ -542,13 +614,71 @@ try:
 
                     cv2.putText(frame, f"Brightness: {BRIGHTNESS_LEVEL}%", (50, y_offset + 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
+        elif BOOK_DETECTION_ENABLED:
+            if no_hand_start_time is None:
+                no_hand_start_time = time.time()
+
+            no_hand_elapsed = time.time() - no_hand_start_time
+            if no_hand_elapsed >= BOOK_ACTIVATION_DELAY:
+                if book_classifier is None:
+                    try:
+                        book_classifier = BookClassifier()
+                    except Exception as exc:
+                        print(f"Book AI initialization failed: {exc}")
+                        BOOK_DETECTION_ENABLED = False
+
+                now = time.time()
+                if (
+                    book_classifier is not None
+                    and now - last_book_inference_time >= BOOK_INFERENCE_INTERVAL
+                ):
+                    try:
+                        book_result = book_classifier.classify(frame)
+                        last_book_inference_time = now
+                    except Exception as exc:
+                        print(f"Book AI inference failed: {exc}")
+                        BOOK_DETECTION_ENABLED = False
+                        book_result = None
+
+                    if (
+                        book_result is not None
+                        and book_result["label"] != last_book_state
+                    ):
+                        print(
+                            f"Book state: {book_result['label']}, "
+                            f"confidence: {book_result['confidence'] * 100:.1f}%"
+                        )
+                        last_book_state = book_result["label"]
+
+                if book_classifier is not None and book_result is not None:
+                    book_classifier.draw_result(frame, book_result)
+                    cv2.putText(
+                        frame,
+                        "BOOK DETECTION MODE",
+                        (20, frame_h - 20),
+                        cv2.FONT_HERSHEY_DUPLEX,
+                        0.8,
+                        (255, 255, 0),
+                        2,
+                    )
+            else:
+                cv2.putText(
+                    frame,
+                    "Waiting for hand...",
+                    (50, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (200, 200, 200),
+                    2,
+                )
 
         if not palm_detected:
             base_hand_size = 0
-            if motor_controller and last_motor_vector != (0.0, 0.0, 0.0):
-                motor_controller.stop()
-                last_motor_vector = (0.0, 0.0, 0.0)
-                last_motor_command_time = time.time()
+            motor_stable_frames = 0
+            if motor_controller and motor_tracking_active:
+                if send_motor_command(motor_controller.stop):
+                    motor_tracking_active = False
+                    last_motor_command_time = time.time()
 
         if drowsy_detected:
             cv2.putText(frame, "SLEEPING ALERT!", (50, 100),
@@ -558,7 +688,7 @@ try:
             cv2.putText(frame, "V GESTURE!", (50, 130),
                         cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 0), 2)
 
-        if not palm_detected and not fist_detected:
+        if hand_detected and not palm_detected and not fist_detected:
             cv2.putText(frame, "Show Open Palm to Track / Fist to Control Brightness", (50, 180),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
@@ -568,10 +698,8 @@ try:
             break
 finally:
     if motor_controller:
-        try:
-            motor_controller.stop()
-        except RuntimeError as exc:
-            print(f"모터 정지 실패: {exc}")
+        if motor_tracking_active or motor_controller.connected:
+            send_motor_command(motor_controller.stop)
         motor_controller.close()
 
     cap.release()
