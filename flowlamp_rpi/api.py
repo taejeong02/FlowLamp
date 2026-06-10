@@ -46,21 +46,9 @@ class PostureInput(BaseModel):
     turtle_neck: bool
 
 
-class MotorVectorInput(BaseModel):
-    x: float = Field(0.0, ge=-1.0, le=1.0)
-    y: float = Field(0.0, ge=-1.0, le=1.0)
-    z: float = Field(0.0, ge=-1.0, le=1.0)
-    speed: int | None = Field(None, ge=0, le=200)
-
-
-class MotorVelocityInput(BaseModel):
-    value: int = Field(..., ge=-200, le=200)
-
-
 @dataclass
 class ApiState:
     led: Any
-    motor: Any
     runtime: Any
     night_schedule: dict[str, Any]
     night_schedule_lock: Any | None = None
@@ -90,12 +78,6 @@ def _color_log_value(color) -> str:
 
 def _log_value_event(message: str):
     print(f"{VALUE_LOG_PREFIX} {message}", flush=True)
-
-
-def _motor_ready(motor) -> bool:
-    return bool(getattr(motor, "connected", False)) and not bool(
-        getattr(motor, "simulation", False)
-    )
 
 
 def _parse_schedule_time(value: str):
@@ -255,7 +237,6 @@ def create_app(state: ApiState) -> FastAPI:
             "brightness": state.led.brightness_percent,
             "color": _color_dict(state.led.current_color),
             "person_detected": _person_detected(state),
-            "motor_ready": _motor_ready(state.motor),
         }
 
     @app.post("/mode/{mode_name}")
@@ -439,88 +420,6 @@ def create_app(state: ApiState) -> FastAPI:
                 "brightness": after_percent,
             }
 
-        motor_gestures = {
-            "move_x_plus",
-            "move_x_minus",
-            "move_y_plus",
-            "move_y_minus",
-            "move_z_plus",
-            "move_z_minus",
-            "stop",
-        }
-
-        if gesture in motor_gestures:
-            vector_by_gesture = {
-                "move_x_plus": {"x": 1.0},
-                "move_x_minus": {"x": -1.0},
-                "move_y_plus": {"y": 1.0},
-                "move_y_minus": {"y": -1.0},
-                "move_z_plus": {"z": 1.0},
-                "move_z_minus": {"z": -1.0},
-                "stop": {"x": 0.0, "y": 0.0, "z": 0.0},
-            }
-            try:
-                motor_status = await _run_blocking(
-                    state.motor.move_xyz,
-                    vector_by_gesture[gesture].get("x", 0.0),
-                    vector_by_gesture[gesture].get("y", 0.0),
-                    vector_by_gesture[gesture].get("z", 0.0),
-                )
-            except (RuntimeError, ValueError) as exc:
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-            return {
-                "gesture": gesture,
-                "action": "motor_moved",
-                "motor": motor_status,
-            }
-
         raise HTTPException(status_code=400, detail=f"Unknown gesture: {gesture}")
-
-    @app.post("/motor/xyz")
-    async def move_motor_xyz(vector: MotorVectorInput):
-        try:
-            motor_status = await _run_blocking(
-                state.motor.move_xyz,
-                vector.x,
-                vector.y,
-                vector.z,
-                vector.speed,
-            )
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        return {
-            "status": "success",
-            "motor": motor_status,
-        }
-
-    @app.post("/motor/{motor_id}/velocity")
-    async def set_motor_velocity(motor_id: int, velocity: MotorVelocityInput):
-        try:
-            motor_status = await _run_blocking(
-                state.motor.set_goal_velocity,
-                motor_id,
-                velocity.value,
-            )
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        return {
-            "status": "success",
-            "motor": motor_status,
-        }
-
-    @app.post("/motor/stop")
-    async def stop_motor():
-        try:
-            motor_status = await _run_blocking(state.motor.stop)
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        return {
-            "status": "success",
-            "motor": motor_status,
-        }
 
     return app
