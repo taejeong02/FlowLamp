@@ -55,6 +55,12 @@ class MotorVelocityInput(BaseModel):
     velocity: int = Field(..., ge=-100, le=100)
 
 
+class MotorVectorInput(BaseModel):
+    x: float = Field(..., ge=-1.0, le=1.0)
+    y: float = Field(..., ge=-1.0, le=1.0)
+    speed: int = Field(20, ge=0, le=100)
+
+
 @dataclass
 class ApiState:
     led: Any
@@ -71,6 +77,31 @@ class ApiState:
 
 async def _run_blocking(func, *args):
     return await asyncio.to_thread(func, *args)
+
+
+def _require_motor(state: ApiState):
+    if state.motor is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Motor controller is not configured.",
+        )
+    return state.motor
+
+
+def _raise_if_motor_failed(result):
+    failed = [
+        motor
+        for motor in result.values()
+        if isinstance(motor, dict) and motor.get("disabled")
+    ]
+    if not failed:
+        return
+
+    details = ", ".join(
+        f"id={motor.get('id')}: {motor.get('error') or 'disabled'}"
+        for motor in failed
+    )
+    raise HTTPException(status_code=503, detail=f"Motor command failed: {details}")
 
 
 def _current_mode_name(runtime) -> str | None:
@@ -358,15 +389,11 @@ def create_app(state: ApiState) -> FastAPI:
 
     @app.post("/motors/{motor_id}/velocity")
     async def set_motor_velocity(motor_id: int, command: MotorVelocityInput):
-        if state.motor is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Motor controller is not configured.",
-            )
+        motor = _require_motor(state)
 
         try:
             result = await _run_blocking(
-                state.motor.set_goal_velocities,
+                motor.set_goal_velocities,
                 {motor_id: command.velocity},
             )
         except ValueError as exc:
@@ -374,9 +401,45 @@ def create_app(state: ApiState) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+        _raise_if_motor_failed(result)
         return {
             "status": "success",
             "motor": result.get(motor_id),
+        }
+
+    @app.post("/motors/xy")
+    async def set_motor_xy(command: MotorVectorInput):
+        motor = _require_motor(state)
+
+        try:
+            result = await _run_blocking(
+                motor.move_xy,
+                command.x,
+                command.y,
+                command.speed,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        _raise_if_motor_failed(result)
+        return {
+            "status": "success",
+            "motors": result,
+        }
+
+    @app.post("/motors/stop")
+    async def stop_motors():
+        motor = _require_motor(state)
+
+        try:
+            result = await _run_blocking(motor.stop)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        _raise_if_motor_failed(result)
+        return {
+            "status": "success",
+            "motors": result,
         }
 
     @app.post("/night_mode/schedule")

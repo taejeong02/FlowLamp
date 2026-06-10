@@ -20,7 +20,8 @@ class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
   Future<void> _motorCommandQueue = Future<void>.value();
   int? _activePointer;
   int? _activeMotor;
-  bool postureMode = false;
+  String _statusMessage = '1번과 4번 모터를 버튼을 누르는 동안 수동 제어합니다.';
+  bool _statusIsError = false;
 
   @override
   void initState() {
@@ -70,10 +71,26 @@ class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
           motorId: motorNumber,
           velocity: velocity,
         );
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _statusMessage = velocity == 0
+              ? '$motorNumber번 모터 정지'
+              : '$motorNumber번 모터 속도 $velocity 전송';
+          _statusIsError = false;
+        });
       } catch (error) {
         debugPrint(
           'FlowLamp motor $motorNumber velocity $velocity error: $error',
         );
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _statusMessage = '$motorNumber번 모터 제어 실패: $error';
+          _statusIsError = true;
+        });
       }
     });
   }
@@ -90,9 +107,41 @@ class _Tab4ManualState extends State<Tab4Manual> with WidgetsBindingObserver {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        _buildStatusCard(),
+        const SizedBox(height: 16),
         ..._motorIds.map(_buildMotorControlPanel),
         const SizedBox(height: 20),
       ],
+    );
+  }
+
+  Widget _buildStatusCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _statusIsError ? Colors.red.shade50 : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _statusIsError ? Colors.red.shade200 : Colors.amber.shade200,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _statusIsError ? Icons.error_outline : Icons.info_outline,
+            color: _statusIsError ? Colors.red : Colors.amber.shade700,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _statusMessage,
+              style: TextStyle(
+                color: _statusIsError ? Colors.red.shade700 : Colors.black87,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

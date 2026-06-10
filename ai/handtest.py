@@ -26,7 +26,6 @@ import mediapipe as mp
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from flowlamp_rpi.devices.motor import MotorController
 from ai.booktest import BookClassifier
 
 # --- 설정 ---
@@ -35,6 +34,7 @@ DROWSY_TIME_LIMIT = 5.0
 
 DEAD_ZONE_XY = 30
 MOTOR_ENABLED = os.environ.get("HAND_MOTOR_ENABLED", "1") != "0"
+MOTOR_CONTROL_MODE = os.environ.get("HAND_MOTOR_CONTROL_MODE", "api").lower()
 MOTOR_SPEED = int(os.environ.get("HAND_MOTOR_SPEED", "12"))
 MOTOR_COMMAND_INTERVAL = float(os.environ.get("HAND_MOTOR_COMMAND_INTERVAL", "0.05"))
 MOTOR_STABLE_FRAMES = int(os.environ.get("HAND_MOTOR_STABLE_FRAMES", "1"))
@@ -61,6 +61,59 @@ CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "15"))
 BOOK_DETECTION_ENABLED = os.environ.get("BOOK_DETECTION_ENABLED", "1") != "0"
 BOOK_ACTIVATION_DELAY = float(os.environ.get("BOOK_ACTIVATION_DELAY", "0.5"))
 BOOK_INFERENCE_INTERVAL = float(os.environ.get("BOOK_INFERENCE_INTERVAL", "0.3"))
+
+
+class ApiMotorController:
+    def __init__(self, base_url, timeout):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.connected = False
+
+    def move_xy(self, x, y, speed=2):
+        return self._post_json(
+            "/motors/xy",
+            {"x": x, "y": y, "speed": speed},
+        ).get("motors", {})
+
+    def stop(self):
+        return self._post_json("/motors/stop", {}).get("motors", {})
+
+    def close(self):
+        self.connected = False
+
+    def _post_json(self, path, payload):
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                self.connected = True
+                body = response.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"FlowLamp API motor command failed: HTTP {exc.code} {detail}"
+            ) from exc
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"FlowLamp API motor command failed: {exc}") from exc
+
+
+def create_motor_controller():
+    if not MOTOR_ENABLED:
+        return None
+
+    if MOTOR_CONTROL_MODE == "direct":
+        from flowlamp_rpi.devices.motor import MotorController
+
+        return MotorController(simulate_on_error=False)
+
+    return ApiMotorController(FLOWLAMP_API_URL, FLOWLAMP_API_TIMEOUT)
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
@@ -295,11 +348,7 @@ motor_stable_frames = 0
 motor_tracking_active = False
 smoothed_motor_x = 0.0
 smoothed_motor_y = 0.0
-motor_controller = (
-    MotorController(simulate_on_error=False)
-    if MOTOR_ENABLED
-    else None
-)
+motor_controller = create_motor_controller()
 book_classifier = None
 book_result = None
 last_book_inference_time = 0.0
