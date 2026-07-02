@@ -26,7 +26,7 @@ Flow Lamp는 사용자가 앱으로 조명을 쉽게 제어하는 것을 넘어,
 
 ## 주요 화면
 
-![Flow Lamp 전체 시연](./docs/images/flowlamp_demo.MP4)
+[![Flow Lamp 시연 영상](./docs/images/demo_thumbnail.jpg)](https://www.youtube.com/watch?v=xPokbQ-bG-k)
 
 | 램프 제어 | 알람 및 루틴 |
 | --- | --- |
