@@ -34,6 +34,19 @@ Flow Lamp는 사용자가 앱으로 조명을 쉽게 제어하는 것을 넘어,
 | --- | --- |
 | ![데이터 화면](./docs/images/app_data.jpg) | ![수동 제어 화면](./docs/images/app_manual.jpg) |
 
+## 하드웨어 제작물
+
+실제 제작한 램프, Raspberry Pi 제어부, LED/모터 연결부를 보여주는 공간입니다.  
+아래 파일명으로 사진을 `docs/images/` 폴더에 넣으면 README에서 바로 보입니다.
+
+| 전체 제작물 | 제어부 배선 |
+| --- | --- |
+| ![전체 하드웨어 제작물](./docs/images/hardware_overview.jpg) | ![Raspberry Pi 제어부 배선](./docs/images/hardware_pi_wiring.jpg) |
+
+| LED 및 모터 구조 | 실제 동작 장면 |
+| --- | --- |
+| ![LED 및 Dynamixel 모터 구조](./docs/images/hardware_led_motor.jpg) | ![Flow Lamp 실제 동작 장면](./docs/images/hardware_demo.jpg) |
+
 ## 핵심 기능
 
 ### 1. 앱 기반 조명 제어
@@ -148,7 +161,7 @@ FlowLamp/
 |-- REPORT.md
 |-- requirements.txt
 |-- ai/                 # 카메라 기반 AI 분석, 학습 기록 DB
-|-- docs/images/        # 앱 화면 이미지
+|-- docs/images/        # 앱 화면 이미지, 하드웨어 사진
 |-- flowlamp_app/       # Flutter 모바일 앱
 |-- flowlamp_rpi/       # FastAPI 서버와 하드웨어 제어 코드
 `-- test/               # 하드웨어 및 저장소 테스트 코드
